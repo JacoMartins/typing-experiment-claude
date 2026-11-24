@@ -723,8 +723,11 @@ class TrechosKeyboardService : InputMethodService() {
             gravity = Gravity.CENTER
             background = rounded(PREVIEW_BG, dp(14).toFloat())
             elevation = dp(4).toFloat()
-            overlay.addView(this, FrameLayout.LayoutParams(w, h))
-        }.also { preview = it }
+        }.also {
+            // fora do apply: lá dentro, "overlay" seria a camada interna da própria TextView
+            overlay.addView(it, FrameLayout.LayoutParams(w, h))
+            preview = it
+        }
         val lp = tv.layoutParams
         if (lp.width != w || lp.height != h) { lp.width = w; lp.height = h; tv.layoutParams = lp }
         tv.text = text
