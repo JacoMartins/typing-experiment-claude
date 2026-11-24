@@ -198,7 +198,7 @@ class TrechosKeyboardService : InputMethodService() {
             val cell = cellViews.getOrNull(GRID_ORDER[rank]) ?: return@forEachIndexed
             val shown = caseLike(before, s, wholeWord = false)
             // o espaço no fim do token aparece como ␣
-            cell.text = if (shown.endsWith(" ")) shown.trimEnd() + "␣" else shown
+            cell.text = shown.replace(' ', '␣')
             cell.tag = shown
             cell.isEnabled = true
         }
@@ -258,7 +258,9 @@ class TrechosKeyboardService : InputMethodService() {
         pieceStack.addLast(s)
         commit(s)
         lastAutoSpace = s.endsWith(" ")
-        if (lastAutoSpace) learnFrom(before + s)
+        // se o token tem espaço, uma palavra acabou: aprende com ela
+        val sp = s.lastIndexOf(' ')
+        if (sp >= 0) learnFrom(before + s.substring(0, sp + 1))
     }
 
     /** Letra da barra de sugestões da grade. */

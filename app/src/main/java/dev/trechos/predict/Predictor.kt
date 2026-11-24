@@ -117,11 +117,11 @@ class Predictor {
     fun predict(textBefore: String, nPieces: Int = 18, nLetters: Int = 8): Prediction {
         val mixed = mixedDistribution(textBefore)
         val letters = mixed.entries
-            .filter { it.key.length == 1 }
+            .filter { it.key.length == 1 && it.key != " " }
             .sortedByDescending { it.value }
             .take(nLetters)
             .map { it.key }
-        val multi = mixed.filterKeys { it.length >= 2 }
+        val multi = mixed.filterKeys { it.length >= 2 || it == " " }
         return Prediction(rank(if (multi.isEmpty()) mixed else multi, nPieces), letters)
     }
 
@@ -143,7 +143,7 @@ class Predictor {
     private fun rank(mixed: Map<String, Float>, n: Int): List<String> {
         val ranked = mixed.entries
             .filter { it.value > 1e-4f }
-            .sortedByDescending { it.value * lengthGain(it.key.length) }
+            .sortedByDescending { it.value * gain(it.key) }
 
         val chosen = ArrayList<String>(n)
         for ((s, p) in ranked) {
@@ -165,6 +165,8 @@ class Predictor {
     }
 
     // ------------------------------------------------------------ internos
+
+    private fun gain(s: String): Float = if (s == " ") 2f else lengthGain(s.length)
 
     private fun lengthGain(len: Int): Float = when (len) {
         1 -> 1f
@@ -228,6 +230,19 @@ class Predictor {
             if (rest.isNotEmpty() && rest.length <= MAX_WHOLE) {
                 val end = "$rest "
                 out[end] = (out[end] ?: 0f) + p
+            }
+        }
+        // O prefixo já é uma palavra completa: o espaço vira um token, sozinho ("␣")
+        // ou já puxando o começo da próxima palavra ("␣de", "␣a").
+        val endMass = words[ctx.prefix] ?: 0f
+        if (ctx.prefix.isNotEmpty() && endMass > 0f) {
+            out[" "] = (out[" "] ?: 0f) + endMass
+            val next = wordPieceDistribution(Context(ctx.prefix, ""))
+                .filterKeys { it.length >= 2 && !it.startsWith(" ") }
+                .entries.sortedByDescending { it.value }.take(12)
+            for ((piece, q) in next) {
+                val k = " $piece"
+                out[k] = (out[k] ?: 0f) + endMass * q
             }
         }
         return out
