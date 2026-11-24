@@ -1027,6 +1027,44 @@ class TrechosKeyboardService : InputMethodService() {
         flowWaiting = false
     }
 
+    private var letterSeq = 0
+
+    /**
+     * Grade "filtrada" pela letra tocada: na hora, usa os tokens atuais que começam com a
+     * letra (resposta instantânea); em seguida pede ao modelo as continuações de
+     * "palavra + letra" e troca a grade por elas (o mais provável segue sob o dedo).
+     * A letra sozinha sempre fica disponível numa célula.
+     */
+    private fun showLetterTokens(letter: String) {
+        val seq = ++letterSeq
+        val quick = pieces.filter { it.startsWith(letter) }.toMutableList()
+        if (letter !in quick) quick.add(letter)
+        pieces = quick
+        pieceFixes = emptyMap()
+        val p = predictor ?: return
+        val before = textBefore()
+        bg {
+            val pr = p.predict(before + letter, 18, ALL_LETTERS)
+            val toks = ArrayList<String>()
+            for (pc in pr.pieces) { val t = letter + pc; if (t !in toks) toks.add(t) }
+            // a letra sozinha entra depois das melhores opções (não toma o lugar sob o dedo)
+            if (letter !in toks) toks.add(minOf(toks.size, 3), letter)
+            // acento: o começo corrigido já inclui a letra tocada, então tira a última letra dele
+            val fx = pr.fixes.entries.associate { (k, v) -> (letter + k) to v.dropLast(1) }
+            main.post {
+                if (seq != letterSeq || !hybridGrid) return@post
+                pieces = toks.take(18)
+                pieceFixes = fx
+                showPieces(pieces)
+                armedCell?.let { old ->
+                    // o dedo ainda está descendo/deslizando: mantém o destaque na célula sob ele
+                    old.isPressed = false
+                    armedCell = cellAt(fingerX, fingerY)?.also { it.isPressed = true }
+                }
+            }
+        }
+    }
+
     /** A tecla de letra (do QWERTY do híbrido) sob este ponto da tela, se houver. */
     private fun letterKeyAt(rawX: Float, rawY: Float): KeyView? {
         val loc = IntArray(2)
@@ -1086,6 +1124,10 @@ class TrechosKeyboardService : InputMethodService() {
                 armedStartX = ev.rawX; armedStartY = ev.rawY
                 armedDownAt = ev.eventTime
                 armedMoved = false
+                // a letra em que o dedo encostou vale: a grade nasce só com tokens que começam com ela
+                val touched = letterKeyAt(ev.rawX, ev.rawY)
+                val letter = letterKeys.firstOrNull { it.first === touched }?.second
+                if (letter != null) showLetterTokens(letter)
                 setArmed(false)
                 hybridGrid = true
                 hideOverlay()
