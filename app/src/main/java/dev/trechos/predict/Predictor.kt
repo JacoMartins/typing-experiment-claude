@@ -116,13 +116,24 @@ class Predictor {
      */
     fun predict(textBefore: String, nPieces: Int = 18, nLetters: Int = 8): Prediction {
         val mixed = mixedDistribution(textBefore)
+        val multi = mixed.filterKeys { it.length >= 2 || it == " " }
+        val pieces = rank(if (multi.isEmpty()) mixed else multi, nPieces)
+
+        // Letras complementam a grade: quanto da chance de cada letra os trechos
+        // visíveis (primeira página) já cobrem? A barra prioriza o que sobra.
+        val visible = pieces.take(9)
         val letters = mixed.entries
             .filter { it.key.length == 1 && it.key != " " }
-            .sortedByDescending { it.value }
+            .map { (l, p) ->
+                val covered = visible
+                    .filter { t -> t.startsWith(l) && visible.none { u -> u != t && t.startsWith(u) } }
+                    .sumOf { t -> (mixed[t] ?: 0f).toDouble() }.toFloat()
+                l to p - 0.8f * minOf(covered, p)
+            }
+            .sortedByDescending { it.second }
             .take(nLetters)
-            .map { it.key }
-        val multi = mixed.filterKeys { it.length >= 2 || it == " " }
-        return Prediction(rank(if (multi.isEmpty()) mixed else multi, nPieces), letters)
+            .map { it.first }
+        return Prediction(pieces, letters)
     }
 
     /** Até [n] trechos prováveis para continuar o texto (em minúsculas). */
