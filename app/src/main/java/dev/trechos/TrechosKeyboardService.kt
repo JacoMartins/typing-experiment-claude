@@ -39,7 +39,12 @@ import kotlin.math.abs
  */
 class TrechosKeyboardService : InputMethodService() {
 
-    private enum class Mode { QWERTY, TRECHOS }
+    /**
+     * QWERTY: só letras. TRECHOS: só a grade de tokens.
+     * HIBRIDO: começo de palavra no QWERTY; depois da 1ª letra, a grade continua a palavra;
+     * quando a palavra termina, volta ao QWERTY.
+     */
+    private enum class Mode { QWERTY, TRECHOS, HIBRIDO }
     private enum class Layer { LETTERS, SYM1, SYM2 }
     private enum class Shift { OFF, ONCE, LOCK }
 
@@ -70,6 +75,13 @@ class TrechosKeyboardService : InputMethodService() {
         main.post { onPrefChanged(key) }
     }
     private var mode = Mode.QWERTY
+
+    // modo híbrido: a grade está à mostra agora? / o usuário pediu uma letra avulsa (tecla abc)?
+    private var hybridGrid = false
+    private var forceLetters = false
+
+    /** A grade de tokens está na tela (modo grade, ou híbrido no meio de uma palavra). */
+    private val gridShown get() = mode == Mode.TRECHOS || (mode == Mode.HIBRIDO && hybridGrid)
     private var layer = Layer.LETTERS
     private var shift = Shift.OFF
 
@@ -128,7 +140,8 @@ class TrechosKeyboardService : InputMethodService() {
         super.onCreate()
         CrashLog.install(this)
         prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        mode = if (prefs.getString(KEY_MODE, Mode.QWERTY.name) == Mode.TRECHOS.name) Mode.TRECHOS else Mode.QWERTY
+        val savedMode = prefs.getString(KEY_MODE, Mode.QWERTY.name)
+        mode = Mode.values().firstOrNull { it.name == savedMode } ?: Mode.QWERTY
         clipStore = ClipStore(File(filesDir, ClipStore.FILE)).also { it.load() }
         clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.addPrimaryClipChangedListener(clipListener)
@@ -461,9 +474,11 @@ class TrechosKeyboardService : InputMethodService() {
         val gen = ++generation
         updateBar()
         if (numeric) { showWords(emptyList(), clickable = false); return }
+        updateHybrid(before)
+        val wantGrid = gridShown
         bg {
             val ws = p.completions(before, 3)
-            val pr = if (mode == Mode.TRECHOS) p.predict(before, 18, ALL_LETTERS) else null
+            val pr = if (wantGrid) p.predict(before, 18, ALL_LETTERS) else null
             main.post {
                 if (gen != generation) return@post
                 words = ws
@@ -484,7 +499,7 @@ class TrechosKeyboardService : InputMethodService() {
     }
 
     private fun showPieces(list: List<String>) {
-        if (mode != Mode.TRECHOS) return
+        if (!gridShown) return
         val before = textBefore()
         val pageItems = list.drop(page * 9).take(9)
         cellViews.forEach { it.label = ""; it.isEnabled = false; it.tag = null }
@@ -541,6 +556,7 @@ class TrechosKeyboardService : InputMethodService() {
     }
 
     private fun typeChar(c: String) {
+        forceLetters = false   // híbrido: depois da letra avulsa, a grade volta
         val out = if (shift != Shift.OFF) c.uppercase() else c
         lastAutoSpace = false
         pieceStack.clear()
@@ -597,7 +613,7 @@ class TrechosKeyboardService : InputMethodService() {
         val ic = currentInputConnection ?: return
         val before = textBefore()
         ic.beginBatchEdit()
-        if ((lastAutoSpace || mode == Mode.TRECHOS) && before.endsWith(" ")) {
+        if ((lastAutoSpace || gridShown) && before.endsWith(" ")) {
             ic.deleteSurroundingText(1, 0)
             commit("$c ")
             lastAutoSpace = true
@@ -617,7 +633,7 @@ class TrechosKeyboardService : InputMethodService() {
         if (!sel.isNullOrEmpty()) { ic.commitText("", 1); return }
         val before = textBefore()
         val last = pieceStack.removeLastOrNull()
-        if (mode == Mode.TRECHOS && last != null && before.endsWith(last)) {
+        if (gridShown && last != null && before.endsWith(last)) {
             ic.deleteSurroundingText(last.length, 0)
         } else {
             pieceStack.clear()
@@ -679,7 +695,27 @@ class TrechosKeyboardService : InputMethodService() {
         return k
     }
 
+    /**
+     * Modo híbrido: com uma palavra começada (e sem a tecla abc pedindo letra avulsa),
+     * mostra a grade; no começo de palavra, o QWERTY. A troca é um fade curto.
+     */
+    private fun updateHybrid(before: String) {
+        if (mode != Mode.HIBRIDO || clipOpen) return
+        var i = before.length
+        while (i > 0 && before[i - 1].isLetter()) i--
+        val inWord = i < before.length
+        if (!inWord) forceLetters = false
+        val want = inWord && !forceLetters
+        if (want == hybridGrid) return
+        hybridGrid = want
+        hideOverlay()
+        buildBody()
+        body.getChildAt(0)?.let { animateIn(it, dy = 0f, duration = 110) }
+    }
+
     private fun setMode(m: Mode) {
+        hybridGrid = false
+        forceLetters = false
         mode = m
         prefs.edit().putString(KEY_MODE, m.name).apply()   // fica salvo para a próxima vez
         layer = Layer.LETTERS
@@ -961,8 +997,9 @@ class TrechosKeyboardService : InputMethodService() {
             }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(50)))
         }
         item("Área de transferência", R.drawable.ic_clipboard) { openClipboard() }
-        if (mode == Mode.TRECHOS) item("Teclado QWERTY", R.drawable.ic_keyboard) { setMode(Mode.QWERTY) }
-        else item("Grade de trechos", R.drawable.ic_grid) { setMode(Mode.TRECHOS) }
+        if (mode != Mode.QWERTY) item("Teclado QWERTY", R.drawable.ic_keyboard) { setMode(Mode.QWERTY) }
+        if (mode != Mode.TRECHOS) item("Grade de trechos", R.drawable.ic_grid) { setMode(Mode.TRECHOS) }
+        if (mode != Mode.HIBRIDO) item("Híbrido: letra + trechos", R.drawable.ic_rows) { setMode(Mode.HIBRIDO) }
         item("Configurações", R.drawable.ic_settings) {
             startActivity(Intent(this, dev.trechos.settings.SettingsActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }
@@ -1192,7 +1229,7 @@ class TrechosKeyboardService : InputMethodService() {
         body.addView(
             when {
                 numeric -> buildNumpad()      // campo de número: teclado numérico, sem mudar o modo salvo
-                mode == Mode.TRECHOS -> buildGrid()
+                gridShown -> buildGrid()
                 else -> buildQwerty()
             }
         )
@@ -1250,14 +1287,14 @@ class TrechosKeyboardService : InputMethodService() {
                 val cell = kv(bg = CELL_BG, sp = 22f, bold = true) { v -> pickPiece(v) }
                 cell.pressedBg = CELL_PRESSED
                 cellViews.add(cell)
-                row.addView(cell, LinearLayout.LayoutParams(0, kh(68), 1f).margins())
+                row.addView(cell, LinearLayout.LayoutParams(0, kh(gridCellH()), 1f).margins())
             }
             val side = when (r) {
                 0 -> kv(bg = FN_BG, iconRes = R.drawable.ic_backspace).also { repeating(it) { backspace() } }
                 1 -> kv("⟳", FN_BG, 20f) { changePage(1) }.also { pageButton = it }
                 else -> enterKey()
             }
-            row.addView(side, LinearLayout.LayoutParams(0, kh(68), 0.8f).margins())
+            row.addView(side, LinearLayout.LayoutParams(0, kh(gridCellH()), 0.8f).margins())
             rows.addView(row)
         }
         // faixa de letras: TODAS as letras, da mais provável para a menos provável.
@@ -1284,7 +1321,7 @@ class TrechosKeyboardService : InputMethodService() {
         val thumb = View(this).apply { background = rounded(HINT_FG, dp(2).toFloat()) }
         track.addView(thumb, FrameLayout.LayoutParams(dp(40), dp(3)))
         col.addView(track, LinearLayout.LayoutParams(dp(120), dp(3)).apply {
-            gravity = Gravity.CENTER_HORIZONTAL; setMargins(0, dp(2), 0, dp(4))
+            gravity = Gravity.CENTER_HORIZONTAL; setMargins(0, dp(2), 0, dp(6))
         })
         fun syncThumb() {
             val content = strip.width.toFloat()
@@ -1299,8 +1336,22 @@ class TrechosKeyboardService : InputMethodService() {
         scroll.setOnScrollChangeListener { _, _, _, _, _ -> syncThumb() }
         scroll.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> syncThumb() }
 
+        // faixa de letras fica EM CIMA da grade (mais perto do texto e dos tokens)
+        col.removeView(rows)
+        col.addView(rows, col.indexOfChild(track) + 1)
+
         val bottom = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        bottom.addView(kv("ABC", FN_BG, 17f) { setMode(Mode.QWERTY) }, keyParams(1.25f))
+        if (mode == Mode.HIBRIDO) {
+            // letra avulsa: volta ao QWERTY só para a próxima letra
+            bottom.addView(kv("abc", FN_BG, 17f) {
+                forceLetters = true
+                hybridGrid = false
+                buildBody()
+                body.getChildAt(0)?.let { animateIn(it, dy = 0f, duration = 110) }
+            }, keyParams(1.25f))
+        } else {
+            bottom.addView(kv("ABC", FN_BG, 17f) { setMode(Mode.QWERTY) }, keyParams(1.25f))
+        }
         bottom.addView(kv(",", FN_BG, 22f) { punct(",") }, keyParams(0.9f))
         bottom.addView(spaceKey(), keyParams(3.2f))
         bottom.addView(kv(".", FN_BG, 22f) { punct(".") }, keyParams(0.9f))
@@ -1549,6 +1600,13 @@ class TrechosKeyboardService : InputMethodService() {
         addState(intArrayOf(android.R.attr.state_pressed), rounded(PRESSED_BG, radius))
         addState(intArrayOf(), rounded(color, radius))
     }
+
+    /**
+     * Altura das células da grade. No híbrido, a grade inteira fica com a MESMA altura
+     * do QWERTY (números + 3 fileiras + inferior), para o teclado não pular na troca.
+     */
+    private fun gridCellH(): Int =
+        if (mode == Mode.HIBRIDO) (NUM_H + 3 * KEY_H - (52 + 11)) / 3 else 68
 
     private fun keyParams(w: Float, heightDp: Int = KEY_H) =
         LinearLayout.LayoutParams(0, kh(heightDp), w).margins()
