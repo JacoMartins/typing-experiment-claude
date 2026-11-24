@@ -75,8 +75,10 @@ fun KeyboardScreen(state: SettingsState, bottomPadding: Dp, modifier: Modifier =
             SwitchRow(PhIcons.Regular.Vibrate, "Vibrar ao tocar", checked = state.haptic, onChange = state::updateHaptic)
             SwitchRow(PhIcons.Regular.HandTap, "Prévia da tecla", "Mostra a letra grande acima do dedo.",
                 checked = state.preview, onChange = state::updatePreview)
-        }
 
-        Spacer(Modifier.height(bottomPadding))
+            // espaço da pílula DENTRO da rolagem (como o contentPadding da IconsScreen do OneDepth):
+            // assim o último item consegue subir acima da barra de navegação
+            Spacer(Modifier.height(Spacing.md + bottomPadding))
+        }
     }
 }

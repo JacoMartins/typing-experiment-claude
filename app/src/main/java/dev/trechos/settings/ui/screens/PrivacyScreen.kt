@@ -65,9 +65,11 @@ fun PrivacyScreen(state: SettingsState, bottomPadding: Dp, modifier: Modifier = 
             NavigationRow(PhIcons.Regular.Trash, "Limpar área de transferência", "Remove também os itens fixados.") {
                 confirm = Confirm.CLIPBOARD
             }
-        }
 
-        Spacer(Modifier.height(bottomPadding))
+            // espaço da pílula DENTRO da rolagem (como o contentPadding da IconsScreen do OneDepth):
+            // assim o último item consegue subir acima da barra de navegação
+            Spacer(Modifier.height(Spacing.md + bottomPadding))
+        }
     }
 
     confirm?.let { what ->

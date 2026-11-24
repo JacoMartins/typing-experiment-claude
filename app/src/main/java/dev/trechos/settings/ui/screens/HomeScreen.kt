@@ -158,8 +158,10 @@ fun HomeScreen(state: SettingsState, bottomPadding: Dp, modifier: Modifier = Mod
             SettingRow(PhIcons.Regular.HandTap, "Acentos e símbolos", "Segure uma tecla, deslize até o que quer e solte.")
             SettingRow(PhIcons.Regular.ArrowsHorizontal, "Mover o cursor", "Arraste o dedo sobre a barra de espaço.")
             SettingRow(PhIcons.Regular.Clipboard, "Área de transferência", "O botão à esquerda das sugestões guarda o que você copiou.")
-        }
 
-        Spacer(Modifier.height(bottomPadding))
+            // espaço da pílula DENTRO da rolagem (como o contentPadding da IconsScreen do OneDepth):
+            // assim o último item consegue subir acima da barra de navegação
+            Spacer(Modifier.height(Spacing.md + bottomPadding))
+        }
     }
 }
