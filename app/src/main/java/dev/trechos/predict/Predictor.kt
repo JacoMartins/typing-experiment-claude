@@ -31,6 +31,12 @@ class Predictor(val language: String = "pt") {
     /** Memória pessoal. Sem ela, o motor usa só o vocabulário geral. */
     var userStore: UserStore? = null
 
+    /**
+     * Palavras do documento que está sendo editado (texto antes E depois do cursor),
+     * com quantas vezes aparecem. Só fica em memória; nunca é salvo.
+     */
+    @Volatile var documentWords: Map<String, Int> = emptyMap()
+
     private val freq = HashMap<String, Float>(60_000)
     private val bigrams = HashMap<String, HashMap<String, Float>>()
 
@@ -220,7 +226,7 @@ class Predictor(val language: String = "pt") {
 
     private fun rank(mixed: Map<String, Float>, n: Int): List<String> {
         val ranked = mixed.entries
-            .filter { it.value > 1e-4f }
+            .filter { it.value > 0f }
             .sortedByDescending { it.value * gain(it.key) }
 
         val chosen = ArrayList<String>(n)
@@ -295,8 +301,14 @@ class Predictor(val language: String = "pt") {
                 if (m.isNotEmpty()) { levels.add(k to m); cands.addAll(m.keys) }
             }
         }
-        // palavras da própria janela quase nunca se repetem logo em seguida: ficam sem bônus
-        val cache = ctx.cache.filterKeys { it != ctx.prefix && it !in ctx.history && matches(it) }
+        // contexto do documento: o texto recente + o documento inteiro (nomes, termos do assunto).
+        // Palavras da própria janela quase nunca se repetem logo em seguida: ficam sem bônus.
+        // A comparação ignora acentos: "Aná" encontra "Anaxágoras".
+        fun matchesLoose(w: String) = ctx.prefix.isEmpty() || strip(w).startsWith(strippedPrefix)
+        val cache = HashMap<String, Int>()
+        for ((w, c) in ctx.cache) cache[w] = c
+        for ((w, c) in documentWords) cache[w] = (cache[w] ?: 0) + c
+        cache.keys.retainAll { it != ctx.prefix && it !in ctx.history && it.length > ctx.prefix.length && matchesLoose(it) }
         cands.addAll(cache.keys)
         if (cands.isEmpty()) return emptyMap()
 
@@ -329,7 +341,9 @@ class Predictor(val language: String = "pt") {
                 personal += ORDER_WEIGHT[k] / levelWeight * ((m[w] ?: 0f) / levelTotals[idx])
             }
             var p = confidence * personal + (1 - confidence) * general
-            if (cacheSum > 0f) p = (1 - CACHE_WEIGHT) * p + CACHE_WEIGHT * (cache[w] ?: 0) / cacheSum
+            // no meio de uma palavra, uma palavra do documento que bate com o começo é muito provável
+            val cw = if (ctx.prefix.isEmpty()) CACHE_WEIGHT else CACHE_WEIGHT_PREFIX
+            if (cacheSum > 0f) p = (1 - cw) * p + cw * (cache[w] ?: 0) / cacheSum
             out[w] = p
         }
         return out
@@ -440,6 +454,7 @@ class Predictor(val language: String = "pt") {
         /** Peso de cada nível do backoff: 3 palavras de contexto valem mais que 1. */
         private val ORDER_WEIGHT = floatArrayOf(0f, 0.2f, 0.3f, 0.5f)
         private const val CACHE_WEIGHT = 0.07f
+        private const val CACHE_WEIGHT_PREFIX = 0.3f
         private const val CACHE_CHARS = 2000
         private const val CACHE_WORDS = 300
         private const val MAX_PIECE = 4

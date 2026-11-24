@@ -436,6 +436,8 @@ class TrechosKeyboardService : InputMethodService() {
         pieceStack.clear()
         lastAutoSpace = false
         checkRecentClip()
+        documentWords = emptyMap()
+        refreshCount = 0   // força reler o documento do novo campo no próximo refresh
         if (clipOpen) closeClipboard() else { hideOverlay(); buildBody() }
         refresh()
     }
@@ -458,6 +460,36 @@ class TrechosKeyboardService : InputMethodService() {
     private fun textBefore(): String =
         currentInputConnection?.getTextBeforeCursor(160, 0)?.toString() ?: ""
 
+    // palavras do documento inteiro (antes e depois do cursor), relidas de tempos em tempos
+    @Volatile private var documentWords: Map<String, Int> = emptyMap()
+    private var refreshCount = 0
+
+    /**
+     * Lê o documento inteiro (até ~40 mil caracteres) e conta as palavras, em segundo plano.
+     * É o "contexto do input": nomes e termos que já estão no texto viram sugestões.
+     * Fica só em memória; campos de senha são ignorados.
+     */
+    private fun scanDocument() {
+        if (isPasswordField()) { documentWords = emptyMap(); return }
+        val ic = currentInputConnection ?: return
+        val before = try { ic.getTextBeforeCursor(30_000, 0)?.toString() } catch (_: Exception) { null }.orEmpty()
+        val after = try { ic.getTextAfterCursor(10_000, 0)?.toString() } catch (_: Exception) { null }.orEmpty()
+        bg {
+            val counts = HashMap<String, Int>()
+            for (m in DOC_WORD.findAll((before + " " + after).lowercase())) {
+                val w = m.value
+                if (w.length >= 3) counts[w] = (counts[w] ?: 0) + 1
+            }
+            documentWords = counts
+        }
+    }
+
+    private fun isPasswordField(): Boolean {
+        val v = (currentInputEditorInfo?.inputType ?: 0) and InputType.TYPE_MASK_VARIATION
+        return v == InputType.TYPE_TEXT_VARIATION_PASSWORD || v == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD ||
+            v == InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+    }
+
     /** Texto mais longo, só para a previsão: alimenta o cache da conversa. */
     private fun contextText(): String =
         currentInputConnection?.getTextBeforeCursor(2000, 0)?.toString() ?: ""
@@ -476,7 +508,10 @@ class TrechosKeyboardService : InputMethodService() {
         if (numeric) { showWords(emptyList(), clickable = false); return }
         updateHybrid(before)
         val wantGrid = gridShown
+        // relê o documento de vez em quando (o texto muda enquanto você escreve)
+        if (refreshCount++ % 30 == 0) scanDocument()
         bg {
+            p.documentWords = documentWords   // lido aqui: a leitura do documento roda antes, na mesma fila
             val ws = p.completions(before, 3)
             val pr = if (wantGrid) p.predict(before, 18, ALL_LETTERS) else null
             main.post {
@@ -703,9 +738,10 @@ class TrechosKeyboardService : InputMethodService() {
         if (mode != Mode.HIBRIDO || clipOpen) return
         var i = before.length
         while (i > 0 && before[i - 1].isLetter()) i--
-        val inWord = i < before.length
-        if (!inWord) forceLetters = false
-        val want = inWord && !forceLetters
+        val typed = before.length - i
+        if (typed == 0) forceLetters = false
+        // a grade só entra depois das primeiras letras (menos troca de teclado, menos cansaço)
+        val want = typed >= HYBRID_LETTERS && !forceLetters
         if (want == hybridGrid) return
         hybridGrid = want
         hideOverlay()
@@ -1630,6 +1666,7 @@ class TrechosKeyboardService : InputMethodService() {
         const val KEY_LEARN = Prefs.LEARN
         const val HISTORY = "historico.tsv"
         private const val USER_WEIGHT = 3f
+        private val DOC_WORD = Regex("\\p{L}+")
         private const val EXTRA_IS_SENSITIVE = "android.content.extra.IS_SENSITIVE"
 
         private const val BAR_H = 48
@@ -1638,6 +1675,8 @@ class TrechosKeyboardService : InputMethodService() {
         private const val LONG_PRESS_MS = 350L
         private const val CHIP_MS = 60_000L
         private const val LANGUAGE_HOLD_MS = 900L
+        /** Modo híbrido: quantas letras no QWERTY antes de a grade aparecer. */
+        private const val HYBRID_LETTERS = 3
 
         /** Idiomas disponíveis: lista de frequência de cada um e o nome mostrado no espaço. */
         val LANGUAGE_FILES = linkedMapOf("pt" to "words_pt.tsv", "en" to "words_en.tsv", "es" to "words_es.tsv")
