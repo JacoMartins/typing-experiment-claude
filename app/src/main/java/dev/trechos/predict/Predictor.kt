@@ -36,6 +36,15 @@ class Predictor(val language: String = "pt") {
      * com quantas vezes aparecem. Só fica em memória; nunca é salvo.
      */
     @Volatile var documentWords: Map<String, Int> = emptyMap()
+        set(v) {
+            if (v === field) return   // mesmo documento: nada a recalcular
+            field = v
+            // prepara UMA vez (não a cada tecla): forma sem acento, ordenado por frequência
+            docEntries = v.entries.sortedByDescending { it.value }.map { DocWord(it.key, strip(it.key), it.value) }
+        }
+
+    private class DocWord(val word: String, val stripped: String, val count: Int)
+    @Volatile private var docEntries: List<DocWord> = emptyList()
 
     private val freq = HashMap<String, Float>(60_000)
     private val bigrams = HashMap<String, HashMap<String, Float>>()
@@ -306,9 +315,14 @@ class Predictor(val language: String = "pt") {
         // A comparação ignora acentos: "Aná" encontra "Anaxágoras".
         fun matchesLoose(w: String) = ctx.prefix.isEmpty() || strip(w).startsWith(strippedPrefix)
         val cache = HashMap<String, Int>()
-        for ((w, c) in ctx.cache) cache[w] = c
-        for ((w, c) in documentWords) cache[w] = (cache[w] ?: 0) + c
-        cache.keys.retainAll { it != ctx.prefix && it !in ctx.history && it.length > ctx.prefix.length && matchesLoose(it) }
+        for ((w, c) in ctx.cache) if (matchesLoose(w)) cache[w] = c
+        if (ctx.prefix.isEmpty()) {
+            // começo de palavra: só as palavras mais frequentes do documento (barato)
+            for (d in docEntries.take(DOC_WORDS_AT_START)) cache[d.word] = (cache[d.word] ?: 0) + d.count
+        } else {
+            for (d in docEntries) if (d.stripped.startsWith(strippedPrefix)) cache[d.word] = (cache[d.word] ?: 0) + d.count
+        }
+        cache.keys.retainAll { it != ctx.prefix && it !in ctx.history && it.length > ctx.prefix.length }
         cands.addAll(cache.keys)
         if (cands.isEmpty()) return emptyMap()
 
@@ -455,6 +469,7 @@ class Predictor(val language: String = "pt") {
         private val ORDER_WEIGHT = floatArrayOf(0f, 0.2f, 0.3f, 0.5f)
         private const val CACHE_WEIGHT = 0.07f
         private const val CACHE_WEIGHT_PREFIX = 0.3f
+        private const val DOC_WORDS_AT_START = 200
         private const val CACHE_CHARS = 2000
         private const val CACHE_WORDS = 300
         private const val MAX_PIECE = 4

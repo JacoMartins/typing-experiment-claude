@@ -78,6 +78,8 @@ class TrechosKeyboardService : InputMethodService() {
 
     // modo híbrido: a grade está à mostra agora? / o usuário pediu uma letra avulsa (tecla abc)?
     private var hybridGrid = false
+    private var hybridQwerty: View? = null
+    private var hybridGridView: View? = null
     private var forceLetters = false
 
     /** A grade de tokens está na tela (modo grade, ou híbrido no meio de uma palavra). */
@@ -472,8 +474,8 @@ class TrechosKeyboardService : InputMethodService() {
     private fun scanDocument() {
         if (isPasswordField()) { documentWords = emptyMap(); return }
         val ic = currentInputConnection ?: return
-        val before = try { ic.getTextBeforeCursor(30_000, 0)?.toString() } catch (_: Exception) { null }.orEmpty()
-        val after = try { ic.getTextAfterCursor(10_000, 0)?.toString() } catch (_: Exception) { null }.orEmpty()
+        val before = try { ic.getTextBeforeCursor(12_000, 0)?.toString() } catch (_: Exception) { null }.orEmpty()
+        val after = try { ic.getTextAfterCursor(4_000, 0)?.toString() } catch (_: Exception) { null }.orEmpty()
         bg {
             val counts = HashMap<String, Int>()
             for (m in DOC_WORD.findAll((before + " " + after).lowercase())) {
@@ -509,7 +511,7 @@ class TrechosKeyboardService : InputMethodService() {
         updateHybrid(before)
         val wantGrid = gridShown
         // relê o documento de vez em quando (o texto muda enquanto você escreve)
-        if (refreshCount++ % 30 == 0) scanDocument()
+        if (refreshCount++ % 60 == 0) scanDocument()
         bg {
             p.documentWords = documentWords   // lido aqui: a leitura do documento roda antes, na mesma fila
             val ws = p.completions(before, 3)
@@ -745,8 +747,25 @@ class TrechosKeyboardService : InputMethodService() {
         if (want == hybridGrid) return
         hybridGrid = want
         hideOverlay()
-        buildBody()
-        body.getChildAt(0)?.let { animateIn(it, dy = 0f, duration = 110) }
+        showHybrid()
+    }
+
+    /** Alterna QWERTY/grade do híbrido sem recriar nada (só visibilidade + fade curto). */
+    private fun showHybrid() {
+        val q = hybridQwerty
+        val g = hybridGridView
+        if (q == null || g == null) { buildBody(); return }
+        val (show, hide) = if (hybridGrid) g to q else q to g
+        hide.animate().cancel()
+        hide.visibility = View.GONE
+        show.visibility = View.VISIBLE
+        animateIn(show, dy = 0f, duration = 90)
+        if (hybridGrid) {
+            // não mostra tokens da palavra anterior: a previsão nova chega em seguida
+            pieces = emptyList()
+            letters = emptyList()
+            showPieces(pieces)
+        }
     }
 
     private fun setMode(m: Mode) {
@@ -1262,13 +1281,24 @@ class TrechosKeyboardService : InputMethodService() {
         shiftView = null
         pageButton = null
         barNormal.visibility = if (numeric || clipOpen) View.GONE else View.VISIBLE
-        body.addView(
-            when {
-                numeric -> buildNumpad()      // campo de número: teclado numérico, sem mudar o modo salvo
-                gridShown -> buildGrid()
-                else -> buildQwerty()
+        hybridQwerty = null
+        hybridGridView = null
+        when {
+            numeric -> body.addView(buildNumpad())      // campo de número: teclado numérico, sem mudar o modo salvo
+            mode == Mode.HIBRIDO -> {
+                // os dois teclados ficam montados; a troca a cada palavra só alterna qual aparece
+                val q = buildQwerty()
+                val g = buildGrid()
+                body.addView(q)
+                body.addView(g)
+                hybridQwerty = q
+                hybridGridView = g
+                q.visibility = if (hybridGrid) View.GONE else View.VISIBLE
+                g.visibility = if (hybridGrid) View.VISIBLE else View.GONE
             }
-        )
+            gridShown -> body.addView(buildGrid())
+            else -> body.addView(buildQwerty())
+        }
         showPieces(pieces)
         updateBar()
     }
@@ -1382,8 +1412,7 @@ class TrechosKeyboardService : InputMethodService() {
             bottom.addView(kv("abc", FN_BG, 17f) {
                 forceLetters = true
                 hybridGrid = false
-                buildBody()
-                body.getChildAt(0)?.let { animateIn(it, dy = 0f, duration = 110) }
+                showHybrid()
             }, keyParams(1.25f))
         } else {
             bottom.addView(kv("ABC", FN_BG, 17f) { setMode(Mode.QWERTY) }, keyParams(1.25f))
