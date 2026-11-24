@@ -117,6 +117,7 @@ class TrechosKeyboardService : InputMethodService() {
 
     override fun onCreate() {
         super.onCreate()
+        CrashLog.install(this)
         prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         mode = if (prefs.getString(KEY_MODE, Mode.QWERTY.name) == Mode.TRECHOS.name) Mode.TRECHOS else Mode.QWERTY
         clipStore = ClipStore(File(filesDir, ClipStore.FILE)).also { it.load() }
@@ -139,7 +140,7 @@ class TrechosKeyboardService : InputMethodService() {
         val version = prefs.getLong(KEY_RESET, 0L)
         loadedVersion = version
         predictor = null
-        worker.execute {
+        bg {
             val p = Predictor()
             for ((file, w) in listOf("words_pt.tsv" to 1f, "words_en.tsv" to 0.35f, "words_es.tsv" to 0.35f)) {
                 assets.open(file).bufferedReader().useLines { p.loadWordList(it, w) }
@@ -153,6 +154,20 @@ class TrechosKeyboardService : InputMethodService() {
     }
 
     private fun historyFile() = File(filesDir, HISTORY)
+
+    /**
+     * Roda em segundo plano. Se algo falhar, o erro é registrado (CrashLog) e o teclado
+     * segue funcionando, em vez de o Android fechar o app inteiro.
+     */
+    private fun bg(task: () -> Unit) {
+        try {
+            worker.execute {
+                try { task() } catch (t: Throwable) { CrashLog.record(this, t) }
+            }
+        } catch (_: Exception) {
+            // executor já encerrado (serviço sendo destruído)
+        }
+    }
 
     /**
      * Abre a memória pessoal (SQLite), faz a faxina, migra o histórico antigo
@@ -242,11 +257,14 @@ class TrechosKeyboardService : InputMethodService() {
             else -> column
         }
         // o tamanho do teclado vem só das teclas; popups ficam por cima sem empurrar nada
-        root = KeyboardRoot(this, content, overlay).apply {
-            floating = layoutMode == Prefs.LAYOUT_FLOATING
-            floatX = prefs.getFloat(Prefs.FLOAT_X, -1f)
-            floatY = prefs.getFloat(Prefs.FLOAT_Y, -1f)
-        }
+        // (fora do apply: lá dentro, "layoutMode" seria o getLayoutMode() da própria View)
+        val isFloating = layoutMode == Prefs.LAYOUT_FLOATING
+        val savedX = prefs.getFloat(Prefs.FLOAT_X, -1f)
+        val savedY = prefs.getFloat(Prefs.FLOAT_Y, -1f)
+        root = KeyboardRoot(this, content, overlay)
+        root.floating = isFloating
+        root.floatX = savedX
+        root.floatY = savedY
         clipOpen = false
         buildBody()
         return root
@@ -398,7 +416,7 @@ class TrechosKeyboardService : InputMethodService() {
         val gen = ++generation
         updateBar()
         if (numeric) { showWords(emptyList(), clickable = false); return }
-        worker.execute {
+        bg {
             val ws = p.completions(before, 3)
             val pr = if (mode == Mode.TRECHOS) p.predict(before, 18, ALL_LETTERS) else null
             main.post {
@@ -596,14 +614,14 @@ class TrechosKeyboardService : InputMethodService() {
     private fun learnChoice(before: String, choice: String) {
         if (!learningEnabled) return
         val p = predictor ?: return
-        worker.execute { try { p.learnPiece(before, choice) } catch (_: Exception) {} }
+        bg { try { p.learnPiece(before, choice) } catch (_: Exception) {} }
     }
 
     /** Aprende a última palavra concluída (com a anterior como contexto). */
     private fun learnFrom(text: String) {
         if (!learningEnabled) return
         val p = predictor ?: return
-        worker.execute {
+        bg {
             try {
                 p.learnCompleted(text, USER_WEIGHT)   // vai para o banco com as 3 palavras anteriores
                 p.warmUp()
@@ -691,10 +709,25 @@ class TrechosKeyboardService : InputMethodService() {
 
     // ---------------------------------------------------------------- área de transferência
 
+    /**
+     * Texto do que foi copiado, ou "" se não for texto. Nunca lança erro: a área de
+     * transferência pode estar vazia, ter uma imagem (ex.: um print) ou pertencer a
+     * outro app que não deixa ler.
+     */
+    private fun clipText(clip: android.content.ClipData): String = try {
+        if (clip.itemCount == 0) "" else {
+            val item = clip.getItemAt(0)
+            val direct = item?.text?.toString()
+            val isText = clip.description?.let { it.hasMimeType("text/*") } == true
+            (direct ?: if (isText) item?.coerceToText(this)?.toString() else null).orEmpty().trim()
+        }
+    } catch (_: Exception) {
+        ""
+    }
+
     private fun onClipChanged() {
         val clip = try { clipboard.primaryClip } catch (_: Exception) { null } ?: return
-        if (clip.itemCount == 0) return
-        val text = clip.getItemAt(0).coerceToText(this)?.toString()?.trim().orEmpty()
+        val text = clipText(clip)
         if (text.isEmpty()) return
         // conteúdo marcado como sensível (ex.: senha copiada de um gerenciador) não vai para o histórico
         val sensitive = clip.description?.extras?.getBoolean(EXTRA_IS_SENSITIVE, false) == true
@@ -710,11 +743,11 @@ class TrechosKeyboardService : InputMethodService() {
     private fun checkRecentClip() {
         if (Build.VERSION.SDK_INT < 26) return
         val clip = try { clipboard.primaryClip } catch (_: Exception) { null } ?: return
-        val stamp = clip.description?.timestamp ?: return
+        val stamp = try { clip.description?.timestamp } catch (_: Exception) { null } ?: return
         if (stamp == lastClipStamp) return
         lastClipStamp = stamp
         if (System.currentTimeMillis() - stamp > CHIP_MS) return
-        val text = clip.getItemAt(0)?.coerceToText(this)?.toString()?.trim().orEmpty()
+        val text = clipText(clip)
         if (text.isEmpty()) return
         val sensitive = clip.description?.extras?.getBoolean(EXTRA_IS_SENSITIVE, false) == true
         if (!sensitive) clipStore.add(text)

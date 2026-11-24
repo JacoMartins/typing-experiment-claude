@@ -1,6 +1,12 @@
 package dev.trechos.settings.ui.screens
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import icons.regular.Copy
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -38,6 +44,44 @@ import icons.regular.ArrowsHorizontal
 import icons.regular.Clipboard
 import icons.regular.HandTap
 import icons.regular.SquaresFour
+
+/** Aviso de que o teclado fechou com erro, com o relatório para copiar e enviar. */
+@Composable
+private fun CrashCard(firstLine: String, onCopy: () -> Unit, onDismiss: () -> Unit) {
+    var copied by remember { mutableStateOf(false) }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Spacing.md)
+            .clip(RoundedCornerShape(28.dp))
+            .background(MaterialTheme.colorScheme.errorContainer)
+            .padding(Spacing.mdLg)
+    ) {
+        Text(
+            "O teclado fechou com um erro",
+            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+            color = MaterialTheme.colorScheme.onErrorContainer
+        )
+        Spacer(Modifier.height(Spacing.xs))
+        Text(
+            firstLine,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onErrorContainer,
+            maxLines = 3
+        )
+        Spacer(Modifier.height(Spacing.smMd))
+        Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm), verticalAlignment = Alignment.CenterVertically) {
+            ButtonComponent(onClick = { onCopy(); copied = true }) {
+                Text(
+                    if (copied) "Copiado" else "Copiar relatório",
+                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold)
+                )
+                Icon(PhIcons.Regular.Copy, contentDescription = null, modifier = Modifier.size(18.dp))
+            }
+            TextButton(onClick = onDismiss) { Text("Descartar") }
+        }
+    }
+}
 
 @Composable
 fun HomeScreen(state: SettingsState, bottomPadding: Dp, modifier: Modifier = Modifier) {
@@ -89,6 +133,14 @@ fun HomeScreen(state: SettingsState, bottomPadding: Dp, modifier: Modifier = Mod
                         modifier = Modifier.size(18.dp)
                     )
                 }
+            }
+
+            state.crashReport?.let { report ->
+                CrashCard(
+                    firstLine = report.lineSequence().drop(4).firstOrNull { it.isNotBlank() } ?: "",
+                    onCopy = state::copyCrashReport,
+                    onDismiss = state::dismissCrash
+                )
             }
 
             SectionTitle("Teste")

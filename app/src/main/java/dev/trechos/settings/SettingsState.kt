@@ -10,6 +10,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.trechos.ClipStore
+import dev.trechos.CrashLog
 import dev.trechos.Prefs
 import dev.trechos.SqliteUserStore
 import dev.trechos.TrechosKeyboardService
@@ -70,6 +71,20 @@ class SettingsState(private val context: Context) {
         context.deleteDatabase(SqliteUserStore.DB_NAME)
         prefs.edit().putLong(Prefs.RESET, System.currentTimeMillis()).apply()
     }
+
+    /** Relatório do último fechamento inesperado, se houver. */
+    var crashReport by mutableStateOf(CrashLog.read(context))
+        private set
+
+    fun refreshCrash() { crashReport = CrashLog.read(context) }
+
+    fun copyCrashReport() {
+        val report = crashReport ?: return
+        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        cm.setPrimaryClip(android.content.ClipData.newPlainText("Relatório de erro do Trechos", report))
+    }
+
+    fun dismissCrash() { CrashLog.clear(context); crashReport = null }
 
     fun clearClipboard() {
         File(context.filesDir, ClipStore.FILE).delete()

@@ -14,6 +14,7 @@ class SettingsActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        dev.trechos.CrashLog.install(this)
         enableEdgeToEdge()
         state = SettingsState(this)
         setContent {
@@ -26,5 +27,6 @@ class SettingsActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         state.resumeTick++
+        state.refreshCrash()
     }
 }
