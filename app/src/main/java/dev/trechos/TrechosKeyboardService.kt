@@ -78,7 +78,7 @@ class TrechosKeyboardService : InputMethodService() {
     private val clipListener = ClipboardManager.OnPrimaryClipChangedListener { onClipChanged() }
 
     // views
-    private lateinit var root: FrameLayout
+    private lateinit var root: KeyboardRoot
     private lateinit var column: LinearLayout
     private lateinit var overlay: FrameLayout
     private lateinit var barNormal: LinearLayout
@@ -89,9 +89,10 @@ class TrechosKeyboardService : InputMethodService() {
     private val wordViews = ArrayList<KeyView>()
     private val cellViews = ArrayList<KeyView>()
     private val letterViews = ArrayList<KeyView>()
-    private val overflowViews = ArrayList<KeyView>()
     private var lettersScroll: HorizontalScrollView? = null
     private var pageButton: KeyView? = null
+    private var shiftView: KeyView? = null
+    private val letterKeys = ArrayList<Pair<KeyView, String>>()
 
     // popups (prévia da tecla, acentos, menu)
     private var preview: TextView? = null
@@ -167,7 +168,6 @@ class TrechosKeyboardService : InputMethodService() {
     }
 
     override fun onCreateInputView(): View {
-        root = FrameLayout(this)
         column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(BG)
@@ -185,8 +185,9 @@ class TrechosKeyboardService : InputMethodService() {
         body = FrameLayout(this)
         column.addView(body)
         overlay = FrameLayout(this)
-        root.addView(column, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
-        root.addView(overlay, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        preview = null
+        // o tamanho do teclado vem só das teclas; popups ficam por cima sem empurrar nada
+        root = KeyboardRoot(this, column, overlay)
         clipOpen = false
         buildBody()
         return root
@@ -249,7 +250,7 @@ class TrechosKeyboardService : InputMethodService() {
         if (numeric) { showWords(emptyList(), clickable = false); return }
         worker.execute {
             val ws = p.completions(before, 3)
-            val pr = if (mode == Mode.TRECHOS) p.predict(before, 18, LETTERS) else null
+            val pr = if (mode == Mode.TRECHOS) p.predict(before, 18, ALL_LETTERS) else null
             main.post {
                 if (gen != generation) return@post
                 words = ws
@@ -282,21 +283,12 @@ class TrechosKeyboardService : InputMethodService() {
             cell.tag = shown
             cell.isEnabled = true
         }
-        val rest = ALL_LETTERS.filter { it.toString() !in letters }
-        overflowViews.forEachIndexed { i, tv ->
-            val l = rest.getOrNull(i)?.toString()
-            val shown = l?.let { caseLike(before, it, wholeWord = false) }
+        lettersScroll?.scrollTo(0, 0)
+        letterViews.forEachIndexed { i, tv ->
+            val shown = letters.getOrNull(i)?.let { caseLike(before, it, wholeWord = false) }
             tv.label = shown ?: ""
             tv.tag = shown
             tv.visibility = if (shown == null) View.GONE else View.VISIBLE
-        }
-        lettersScroll?.scrollTo(0, 0)
-        letterViews.forEachIndexed { i, tv ->
-            val l = letters.getOrNull(i)
-            val shown = l?.let { caseLike(before, it, wholeWord = false) }
-            tv.label = shown ?: ""
-            tv.tag = shown
-            tv.isEnabled = shown != null
         }
         val pages = maxOf(1, (list.size + 8) / 9)
         pageButton?.label = if (pages > 1) "⟳ ${page + 1}/$pages" else "⟳"
@@ -331,7 +323,7 @@ class TrechosKeyboardService : InputMethodService() {
         if (text.isNotEmpty() && !chipUsed) { chipUsed = true; updateBar() }
         if (shift == Shift.ONCE && text.any { it.isLetter() }) {
             shift = Shift.OFF
-            if (mode == Mode.QWERTY) buildBody()
+            refreshShiftUi()   // só troca os rótulos: reconstruir aqui perderia toques de outros dedos
         }
     }
 
@@ -345,6 +337,7 @@ class TrechosKeyboardService : InputMethodService() {
     private fun pickPiece(cell: View) {
         val s = cell.tag as? String ?: return
         val before = textBefore()
+        learnChoice(before, s)
         pieceStack.addLast(s)
         commit(s)
         lastAutoSpace = s.endsWith(" ")
@@ -355,6 +348,7 @@ class TrechosKeyboardService : InputMethodService() {
 
     /** Letra da barra de sugestões da grade. */
     private fun typeLetter(l: String) {
+        learnChoice(textBefore(), l)
         lastAutoSpace = false
         pieceStack.addLast(l)
         commit(l)
@@ -446,6 +440,13 @@ class TrechosKeyboardService : InputMethodService() {
         hideOverlay()
         buildBody()
         refresh()
+    }
+
+    /** Aprende qual token/letra você escolheu neste ponto da palavra (vale para a grade e a faixa). */
+    private fun learnChoice(before: String, choice: String) {
+        if (!learningEnabled) return
+        val p = predictor ?: return
+        worker.execute { try { p.learnPiece(before, choice) } catch (_: Exception) {} }
     }
 
     /** Aprende a última palavra concluída (com a anterior como contexto). */
@@ -615,8 +616,8 @@ class TrechosKeyboardService : InputMethodService() {
         } else {
             for (rowItems in items.chunked(2)) {
                 val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-                for (item in rowItems) row.addView(clipCard(item), LinearLayout.LayoutParams(0, dp(92), 1f).margins())
-                if (rowItems.size == 1) row.addView(View(this), LinearLayout.LayoutParams(0, dp(92), 1f).margins())
+                for (item in rowItems) row.addView(clipCard(item), LinearLayout.LayoutParams(0, dp(92), 1f).cardMargins())
+                if (rowItems.size == 1) row.addView(View(this), LinearLayout.LayoutParams(0, dp(92), 1f).cardMargins())
                 list.addView(row)
             }
             list.addView(TextView(this).apply {
@@ -706,28 +707,34 @@ class TrechosKeyboardService : InputMethodService() {
         return intArrayOf(a[0] - b[0], a[1] - b[1])
     }
 
+    /**
+     * Balão de prévia: uma única View, criada uma vez e só reposicionada
+     * (translation) a cada toque. Assim tocar uma tecla não refaz o layout do teclado.
+     */
     private fun showPreview(k: KeyView, text: String) {
-        hidePreview()
         val pos = posInOverlay(k)
-        val w = k.width + dp(14)
-        val h = (k.height * 1.5f).toInt()
-        val left = (pos[0] + k.width / 2 - w / 2).coerceIn(0, maxOf(0, overlay.width - w))
-        val top = maxOf(0, pos[1] - h + (k.height * 0.15f).toInt())
-        val tv = TextView(this).apply {
-            this.text = text
+        val keyW = (k.width * (1f - k.extraLeft - k.extraRight)).toInt()
+        val keyLeft = pos[0] + (k.width * k.extraLeft).toInt()
+        val w = keyW + dp(8)
+        val h = (k.height * 1.4f).toInt()
+        val tv = preview ?: TextView(this).apply {
             setTextColor(FG)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 30f)
             gravity = Gravity.CENTER
             background = rounded(PREVIEW_BG, dp(14).toFloat())
             elevation = dp(4).toFloat()
-        }
-        overlay.addView(tv, FrameLayout.LayoutParams(w, h).apply { leftMargin = left; topMargin = top })
-        preview = tv
+            overlay.addView(this, FrameLayout.LayoutParams(w, h))
+        }.also { preview = it }
+        val lp = tv.layoutParams
+        if (lp.width != w || lp.height != h) { lp.width = w; lp.height = h; tv.layoutParams = lp }
+        tv.text = text
+        tv.translationX = (keyLeft + keyW / 2 - w / 2).coerceIn(0, maxOf(0, overlay.width - w)).toFloat()
+        tv.translationY = maxOf(0, pos[1] - h + (k.height * 0.2f).toInt()).toFloat()
+        tv.visibility = View.VISIBLE
     }
 
     private fun hidePreview() {
-        preview?.let { overlay.removeView(it) }
-        preview = null
+        preview?.visibility = View.INVISIBLE
     }
 
     /** Popup como o do Samsung: a opção padrão (destacada) fica na fileira de baixo, à esquerda. */
@@ -833,10 +840,11 @@ class TrechosKeyboardService : InputMethodService() {
     private fun buildBody() {
         if (!::body.isInitialized) return
         body.removeAllViews()
-        overflowViews.clear()
         lettersScroll = null
         cellViews.clear()
         letterViews.clear()
+        letterKeys.clear()
+        shiftView = null
         pageButton = null
         barNormal.visibility = if (numeric || clipOpen) View.GONE else View.VISIBLE
         body.addView(
@@ -879,7 +887,7 @@ class TrechosKeyboardService : InputMethodService() {
                     " " -> kv(if (phone) "␣" else "", FN_BG, 20f) { commit(" ") }
                     else -> kv(label, if (label[0].isDigit()) KEY_BG else FN_BG, 26f) { commit(label) }
                 }
-                row.addView(v, LinearLayout.LayoutParams(0, dp(58), 1f).margins())
+                row.addView(v, LinearLayout.LayoutParams(0, dp(66), 1f).margins())
             }
             col.addView(row)
         }
@@ -894,7 +902,7 @@ class TrechosKeyboardService : InputMethodService() {
                 val cell = kv(bg = CELL_BG, sp = 22f, bold = true) { v -> pickPiece(v) }
                 cell.pressedBg = CELL_PRESSED
                 cellViews.add(cell)
-                row.addView(cell, LinearLayout.LayoutParams(0, dp(60), 1f).margins())
+                row.addView(cell, LinearLayout.LayoutParams(0, dp(68), 1f).margins())
             }
             val side = when (r) {
                 0 -> kv(bg = FN_BG, iconRes = R.drawable.ic_backspace).also { repeating(it) { backspace() } }
@@ -905,36 +913,47 @@ class TrechosKeyboardService : InputMethodService() {
                 }.also { pageButton = it }
                 else -> kv(bg = FN_BG, iconRes = R.drawable.ic_enter) { enter() }
             }
-            row.addView(side, LinearLayout.LayoutParams(0, dp(60), 0.8f).margins())
+            row.addView(side, LinearLayout.LayoutParams(0, dp(68), 0.8f).margins())
             col.addView(row)
         }
-        // barra de letras: as sugeridas primeiro; deslizando para o lado vem o resto do alfabeto
-        val lettersRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val dotsW = dp(58)
-        val cellW = (resources.displayMetrics.widthPixels - dp(8) - dotsW) / LETTERS
+        // faixa de letras: TODAS as letras, da mais provável para a menos provável.
+        // Desliza para o lado; as bordas esmaecem e a barrinha embaixo mostra onde você está.
+        val cellW = (resources.displayMetrics.widthPixels / 7.5f).toInt()
         val strip = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        fun stripKey(): KeyView {
+        repeat(ALL_LETTERS.length) {
             val k = kv(bg = KEY_BG, sp = 19f) { v -> (v.tag as? String)?.let { typeLetter(it) } }
-            strip.addView(k, LinearLayout.LayoutParams(cellW - dp(6), dp(44)).margins())
-            return k
+            letterViews.add(k)
+            strip.addView(k, LinearLayout.LayoutParams(cellW, dp(52)))
         }
-        repeat(LETTERS) { letterViews.add(stripKey()) }
-        // divisória discreta entre as sugeridas e o resto
-        strip.addView(View(this).apply { setBackgroundColor(DIVIDER) },
-            LinearLayout.LayoutParams(dp(2), dp(28)).apply { gravity = Gravity.CENTER_VERTICAL; setMargins(dp(4), 0, dp(4), 0) })
-        repeat(ALL_LETTERS.length) { overflowViews.add(stripKey()) }
         val scroll = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
+            isHorizontalFadingEdgeEnabled = true
+            setFadingEdgeLength(dp(36))
+            overScrollMode = View.OVER_SCROLL_NEVER
             addView(strip)
         }
         lettersScroll = scroll
-        lettersRow.addView(scroll, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        // ⋯ pula para o resto das letras (ou volta para as sugeridas)
-        lettersRow.addView(kv(bg = FN_BG, iconRes = R.drawable.ic_more) {
-            val target = overflowViews.firstOrNull()?.left?.minus(dp(6)) ?: 0
-            scroll.smoothScrollTo(if (scroll.scrollX < target / 2) target else 0, 0)
-        }, LinearLayout.LayoutParams(dotsW - dp(6), dp(44)).margins())
-        col.addView(lettersRow)
+        col.addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(52)))
+
+        // indicador de rolagem: trilho fino com um "polegar" que acompanha a faixa
+        val track = FrameLayout(this).apply { background = rounded(FN_BG, dp(2).toFloat()) }
+        val thumb = View(this).apply { background = rounded(HINT_FG, dp(2).toFloat()) }
+        track.addView(thumb, FrameLayout.LayoutParams(dp(40), dp(3)))
+        col.addView(track, LinearLayout.LayoutParams(dp(120), dp(3)).apply {
+            gravity = Gravity.CENTER_HORIZONTAL; setMargins(0, dp(2), 0, dp(4))
+        })
+        fun syncThumb() {
+            val content = strip.width.toFloat()
+            val view = scroll.width.toFloat()
+            if (content <= 0f || view <= 0f) return
+            val tw = (track.width * (view / content)).coerceIn(dp(16).toFloat(), track.width.toFloat())
+            val lp = thumb.layoutParams
+            if (lp.width != tw.toInt()) { lp.width = tw.toInt(); thumb.layoutParams = lp }
+            val maxScroll = (content - view).coerceAtLeast(1f)
+            thumb.translationX = (track.width - tw) * (scroll.scrollX / maxScroll)
+        }
+        scroll.setOnScrollChangeListener { _, _, _, _, _ -> syncThumb() }
+        scroll.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> syncThumb() }
 
         val bottom = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         bottom.addView(kv("ABC", FN_BG, 17f) { setMode(Mode.QWERTY) }, keyParams(1.25f))
@@ -959,13 +978,16 @@ class TrechosKeyboardService : InputMethodService() {
                 for ((idx, chars) in rows.withIndex()) {
                     val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
                     if (idx == 2) row.addView(shiftKey(), keyParams(1.45f))
-                    if (idx == 1) row.addView(View(this), keyParams(0.5f))   // fileira do meio recuada
-                    for (ch in chars) {
+                    for ((ci, ch) in chars.withIndex()) {
                         val base = ch.toString()
-                        val shown = if (shift != Shift.OFF) base.uppercase() else base
-                        row.addView(charKey(base, 24f, HINTS[ch], accentOptions(ch), shown), keyParams(1f))
+                        val k = charKey(base, 24f, HINTS[ch], accentOptions(ch))
+                        letterKeys.add(k to base)
+                        // fileira do meio recuada: o "a" e o "l" ganham meia tecla de área de toque na borda
+                        var weight = 1f
+                        if (idx == 1 && ci == 0) { weight = 1.5f; k.extraLeft = 1f / 3f }
+                        if (idx == 1 && ci == chars.length - 1) { weight = 1.5f; k.extraRight = 1f / 3f }
+                        row.addView(k, keyParams(weight))
                     }
-                    if (idx == 1) row.addView(View(this), keyParams(0.5f))
                     if (idx == 2) row.addView(backspaceKey(), keyParams(1.45f))
                     col.addView(row)
                 }
@@ -999,16 +1021,24 @@ class TrechosKeyboardService : InputMethodService() {
         return col
     }
 
-    private fun shiftKey(): KeyView {
-        val icon = when (shift) {
-            Shift.OFF -> R.drawable.ic_shift
-            Shift.ONCE -> R.drawable.ic_shift_on
-            Shift.LOCK -> R.drawable.ic_shift_lock
-        }
-        return kv(bg = FN_BG, iconRes = icon) {
+    private fun shiftKey(): KeyView =
+        kv(bg = FN_BG, iconRes = R.drawable.ic_shift) {
             shift = when (shift) { Shift.OFF -> Shift.ONCE; Shift.ONCE -> Shift.LOCK; Shift.LOCK -> Shift.OFF }
-            buildBody(); refresh()
-        }.also { if (shift != Shift.OFF) it.fg = ACCENT }
+            refreshShiftUi(); refresh()
+        }.also { shiftView = it }
+
+    /** Atualiza o ícone do ⇧ e os rótulos das letras, sem recriar as teclas. */
+    private fun refreshShiftUi() {
+        shiftView?.let { v ->
+            v.icon = getDrawable(when (shift) {
+                Shift.OFF -> R.drawable.ic_shift
+                Shift.ONCE -> R.drawable.ic_shift_on
+                Shift.LOCK -> R.drawable.ic_shift_lock
+            })
+            v.fg = if (shift == Shift.OFF) FG else ACCENT
+            v.invalidate()
+        }
+        for ((k, base) in letterKeys) k.label = if (shift != Shift.OFF) base.uppercase() else base
     }
 
     private fun backspaceKey(): KeyView =
@@ -1032,6 +1062,8 @@ class TrechosKeyboardService : InputMethodService() {
         hintFg = HINT_FG
         textSizePx = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, sp, resources.displayMetrics)
         radiusPx = dp(9).toFloat()
+        insetX = dp(3).toFloat()
+        insetY = dp(4).toFloat()
         this.bold = bold
         this.hint = hint
         if (iconRes != 0) {
@@ -1045,8 +1077,9 @@ class TrechosKeyboardService : InputMethodService() {
      * Tecla de caractere: mostra a prévia ao tocar e digita ao soltar.
      * Segurando, abre o popup (símbolo + acentos); desliza para escolher e solta para digitar.
      */
-    private fun charKey(base: String, sp: Float, hint: String?, options: List<String>, shown: String = base): KeyView {
-        val k = kv(shown, KEY_BG, sp, hint = hint)
+    private fun charKey(base: String, sp: Float, hint: String?, options: List<String>): KeyView {
+        fun shown() = if (shift != Shift.OFF) base.uppercase() else base
+        val k = kv(shown(), KEY_BG, sp, hint = hint)
         val longPress = Runnable {
             hidePreview()
             k.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
@@ -1057,7 +1090,7 @@ class TrechosKeyboardService : InputMethodService() {
                 MotionEvent.ACTION_DOWN -> {
                     v.isPressed = true
                     tap(v)
-                    showPreview(k, shown)
+                    showPreview(k, shown())
                     if (options.isNotEmpty()) main.postDelayed(longPress, LONG_PRESS_MS)
                 }
                 MotionEvent.ACTION_MOVE -> if (accentPanel != null) moveAccent(ev.rawX, ev.rawY)
@@ -1164,7 +1197,10 @@ class TrechosKeyboardService : InputMethodService() {
     private fun keyParams(w: Float, heightDp: Int = KEY_H) =
         LinearLayout.LayoutParams(0, dp(heightDp), w).margins()
 
-    private fun LinearLayout.LayoutParams.margins(): LinearLayout.LayoutParams = apply {
+    /** Teclas não têm margem: o espaçamento é desenhado dentro delas (ver KeyView.insetX/insetY). */
+    private fun LinearLayout.LayoutParams.margins(): LinearLayout.LayoutParams = this
+
+    private fun LinearLayout.LayoutParams.cardMargins(): LinearLayout.LayoutParams = apply {
         setMargins(dp(3), dp(4), dp(3), dp(4))
     }
 
@@ -1180,15 +1216,12 @@ class TrechosKeyboardService : InputMethodService() {
         private const val EXTRA_IS_SENSITIVE = "android.content.extra.IS_SENSITIVE"
 
         private const val BAR_H = 48
-        private const val KEY_H = 52
-        private const val NUM_H = 46
+        private const val KEY_H = 60
+        private const val NUM_H = 54
         private const val LONG_PRESS_MS = 350L
         private const val CHIP_MS = 60_000L
 
-        /** Quantas letras sugeridas aparecem antes do resto do alfabeto. */
-        private const val LETTERS = 7
-
-        /** Letras do "resto" da faixa, depois das sugeridas. */
+        /** Letras da faixa rolável da grade (a ordem na tela vem da previsão). */
         private const val ALL_LETTERS = "abcdefghijklmnopqrstuvwxyzçáâãàéêíóôõú"
 
         /** Ordem de preenchimento: o mais provável no centro, depois as bordas, depois os cantos. */

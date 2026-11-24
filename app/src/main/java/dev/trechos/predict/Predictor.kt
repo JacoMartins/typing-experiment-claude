@@ -154,27 +154,40 @@ class Predictor {
      * Trechos para a grade (2+ caracteres; os que fecham palavra terminam em espaço)
      * e as letras soltas mais prováveis, para a barra de letras.
      */
-    fun predict(textBefore: String, nPieces: Int = 18, nLetters: Int = 8): Prediction {
+    fun predict(textBefore: String, nPieces: Int = 18, alphabet: String = "abcdefghijklmnopqrstuvwxyz"): Prediction {
         val mixed = mixedDistribution(textBefore)
         val multi = mixed.filterKeys { it.length >= 2 || it == " " }
         val pieces = rank(if (multi.isEmpty()) mixed else multi, nPieces)
 
         // Letras complementam a grade: quanto da chance de cada letra os trechos
-        // visíveis (primeira página) já cobrem? A barra prioriza o que sobra.
+        // visíveis (primeira página) já cobrem? A faixa prioriza o que sobra.
+        // Letras sem chance nenhuma vão para o fim, na ordem da frequência geral.
         val visible = pieces.take(9)
-        val letters = mixed.entries
-            .filter { it.key.length == 1 && it.key != " " }
-            .map { (l, p) ->
-                val covered = visible
-                    .filter { t -> t.startsWith(l) && visible.none { u -> u != t && t.startsWith(u) } }
-                    .sumOf { t -> (mixed[t] ?: 0f).toDouble() }.toFloat()
-                l to p - 0.8f * minOf(covered, p)
-            }
-            .sortedByDescending { it.second }
-            .take(nLetters)
-            .map { it.first }
+        val base = charNodes[""]
+        val letters = alphabet.map { it.toString() }.map { l ->
+            val p = mixed[l] ?: 0f
+            val covered = visible
+                .filter { t -> t.startsWith(l) && visible.none { u -> u != t && t.startsWith(u) } }
+                .sumOf { t -> (mixed[t] ?: 0f).toDouble() }.toFloat()
+            val general = base?.let { (it.next[l[0]] ?: 0f) / it.total } ?: 0f
+            l to (p - 0.8f * minOf(covered, p) + 1e-4f * general)
+        }.sortedByDescending { it.second }.map { it.first }
         return Prediction(pieces, letters)
     }
+
+    /**
+     * Aprende com a escolha de um token (ou letra) na grade: "neste ponto da palavra,
+     * você escolheu este pedaço". Da próxima vez, esse pedaço sobe na grade.
+     */
+    fun learnPiece(textBefore: String, piece: String) {
+        val p = piece.lowercase()
+        if (p.isEmpty()) return
+        userStore?.learnExact(pieceKey(parse(textBefore)), p)
+    }
+
+    /** No começo da palavra, a escolha depende da palavra anterior; no meio, do pedaço já escrito. */
+    private fun pieceKey(ctx: Context) =
+        if (ctx.prefix.isEmpty()) "$PIECE_MARK${ctx.prev}|" else "$PIECE_MARK|${ctx.prefix}"
 
     /** Até [n] trechos prováveis para continuar o texto (em minúsculas). */
     fun pieces(textBefore: String, n: Int = 18): List<String> = rank(mixedDistribution(textBefore), n)
@@ -188,6 +201,15 @@ class Predictor {
         val mixed = HashMap<String, Float>()
         for ((s, p) in pw) mixed[s] = alpha * p
         for ((s, p) in pc) mixed[s] = (mixed[s] ?: 0f) + (1 - alpha) * p
+
+        // tokens que você costuma escolher neste mesmo ponto ganham peso
+        val chosen = userStore?.followers(pieceKey(ctx), 60).orEmpty()
+        val total = chosen.values.sum()
+        if (total > 0f) {
+            val beta = total / (total + 2f) * 0.5f
+            for (k in mixed.keys.toList()) mixed[k] = (1 - beta) * mixed[k]!!
+            for ((s, c) in chosen) mixed[s] = (mixed[s] ?: 0f) + beta * c / total
+        }
         return mixed
     }
 
@@ -400,6 +422,8 @@ class Predictor {
 
     companion object {
         const val START = "<s>"
+        /** Prefixo dos contextos de "token escolhido" na memória pessoal. */
+        private const val PIECE_MARK = "§"
         /** Peso de cada nível do backoff: 3 palavras de contexto valem mais que 1. */
         private val ORDER_WEIGHT = floatArrayOf(0f, 0.2f, 0.3f, 0.5f)
         private const val CACHE_WEIGHT = 0.07f

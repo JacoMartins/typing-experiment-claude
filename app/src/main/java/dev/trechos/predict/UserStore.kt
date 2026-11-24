@@ -20,6 +20,9 @@ interface UserStore {
     /** Registra [word] escrita depois de [history] (as palavras anteriores, da mais antiga à mais recente). */
     fun learn(history: List<String>, word: String, now: Long = System.currentTimeMillis())
 
+    /** Registra [item] só no contexto exato [context] (usado para os tokens escolhidos na grade). */
+    fun learnExact(context: String, item: String, now: Long = System.currentTimeMillis())
+
     companion object {
         const val MAX_ORDER = 3
         const val HALF_LIFE_MS = 60L * 24 * 60 * 60 * 1000   // 60 dias
@@ -52,10 +55,12 @@ class MemoryUserStore : UserStore {
     }
 
     override fun learn(history: List<String>, word: String, now: Long) {
-        for (ctx in UserStore.contexts(history)) {
-            val e = table.getOrPut(ctx) { HashMap() }.getOrPut(word) { Entry(0f, now) }
-            e.count = e.count * UserStore.decay(now - e.last) + 1f
-            e.last = now
-        }
+        for (ctx in UserStore.contexts(history)) learnExact(ctx, word, now)
+    }
+
+    override fun learnExact(context: String, item: String, now: Long) {
+        val e = table.getOrPut(context) { HashMap() }.getOrPut(item) { Entry(0f, now) }
+        e.count = e.count * UserStore.decay(now - e.last) + 1f
+        e.last = now
     }
 }

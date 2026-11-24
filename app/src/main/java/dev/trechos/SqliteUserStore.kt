@@ -47,22 +47,29 @@ class SqliteUserStore(context: Context) :
         val db = writableDatabase
         db.beginTransaction()
         try {
-            for (ctx in UserStore.contexts(history)) {
-                var count = 0f
-                db.rawQuery("SELECT count, last FROM ngram WHERE ctx = ? AND word = ?", arrayOf(ctx, word)).use { c ->
-                    if (c.moveToFirst()) count = c.getFloat(0) * UserStore.decay(now - c.getLong(1))
-                }
-                db.insertWithOnConflict("ngram", null, ContentValues().apply {
-                    put("ctx", ctx)
-                    put("word", word)
-                    put("count", count + 1f)
-                    put("last", now)
-                }, SQLiteDatabase.CONFLICT_REPLACE)
-            }
+            for (ctx in UserStore.contexts(history)) upsert(db, ctx, word, now)
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
         }
+    }
+
+    override fun learnExact(context: String, item: String, now: Long) {
+        upsert(writableDatabase, context, item, now)
+    }
+
+    /** Soma 1 à contagem (já descontada pelo tempo) de (ctx, word). */
+    private fun upsert(db: SQLiteDatabase, ctx: String, word: String, now: Long) {
+        var count = 0f
+        db.rawQuery("SELECT count, last FROM ngram WHERE ctx = ? AND word = ?", arrayOf(ctx, word)).use { c ->
+            if (c.moveToFirst()) count = c.getFloat(0) * UserStore.decay(now - c.getLong(1))
+        }
+        db.insertWithOnConflict("ngram", null, ContentValues().apply {
+            put("ctx", ctx)
+            put("word", word)
+            put("count", count + 1f)
+            put("last", now)
+        }, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
     /** Faxina: tira o que já foi praticamente esquecido (pouco usado e antigo). */

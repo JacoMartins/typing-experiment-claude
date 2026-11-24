@@ -11,6 +11,10 @@ import android.view.View
 /**
  * Tecla desenhada à mão: fundo arredondado, rótulo central (ou ícone)
  * e um símbolo pequeno no canto, como no teclado Samsung.
+ *
+ * A área de toque é a View inteira, mas o desenho fica recuado ([insetX], [insetY]):
+ * assim o espaço visual entre as teclas também conta como toque da tecla mais próxima,
+ * em vez de ser uma área morta onde o toque se perde.
  */
 class KeyView(context: Context) : View(context) {
 
@@ -30,6 +34,14 @@ class KeyView(context: Context) : View(context) {
     var radiusPx: Float = 0f
     var iconSizePx: Int = 0
 
+    /** Recuo do desenho em relação à área de toque. */
+    var insetX = 0f
+    var insetY = 0f
+
+    /** Fração extra de área de toque à esquerda/direita (ex.: o "a" e o "l" da fileira do meio). */
+    var extraLeft = 0f
+    var extraRight = 0f
+
     private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
     private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.RIGHT }
@@ -45,17 +57,24 @@ class KeyView(context: Context) : View(context) {
     }
 
     override fun onDraw(canvas: Canvas) {
-        val w = width.toFloat()
-        val h = height.toFloat()
-        rect.set(0f, 0f, w, h)
+        val fullW = width.toFloat()
+        val fullH = height.toFloat()
+        rect.set(
+            fullW * extraLeft + insetX, insetY,
+            fullW * (1f - extraRight) - insetX, fullH - insetY,
+        )
+        val cx = rect.centerX()
+        val cy = rect.centerY()
+        val w = rect.width()
+        val h = rect.height()
         bgPaint.color = if (isPressed && pressedBg != 0) pressedBg else bg
         if (bgPaint.color != 0) canvas.drawRoundRect(rect, radiusPx, radiusPx, bgPaint)
 
         val ic = icon
         if (ic != null) {
             val s = if (iconSizePx > 0) iconSizePx else (minOf(w, h) * 0.5f).toInt()
-            val l = ((w - s) / 2).toInt()
-            val t = ((h - s) / 2).toInt()
+            val l = (cx - s / 2f).toInt()
+            val t = (cy - s / 2f).toInt()
             ic.setBounds(l, t, l + s, t + s)
             ic.setTint(fg)
             ic.draw(canvas)
@@ -68,8 +87,8 @@ class KeyView(context: Context) : View(context) {
             val tw = textPaint.measureText(label)
             if (tw > maxW && tw > 0) textPaint.textSize = textSizePx * maxW / tw
             val fm = textPaint.fontMetrics
-            val y = h / 2 - (fm.ascent + fm.descent) / 2 + (if (hint != null) h * 0.04f else 0f)
-            canvas.drawText(label, w / 2, y, textPaint)
+            val y = cy - (fm.ascent + fm.descent) / 2 + (if (hint != null) h * 0.04f else 0f)
+            canvas.drawText(label, cx, y, textPaint)
         }
 
         val hn = hint
@@ -77,7 +96,7 @@ class KeyView(context: Context) : View(context) {
             hintPaint.color = hintFg
             hintPaint.textSize = h * 0.21f
             val pad = h * 0.11f
-            canvas.drawText(hn, w - pad, pad + hintPaint.textSize * 0.8f, hintPaint)
+            canvas.drawText(hn, rect.right - pad, rect.top + pad + hintPaint.textSize * 0.8f, hintPaint)
         }
     }
 }
