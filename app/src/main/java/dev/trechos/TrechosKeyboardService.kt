@@ -823,15 +823,44 @@ class TrechosKeyboardService : InputMethodService() {
         }
     }
 
+    /** A tecla sob o ponto, se estiver dentro dela (usada para os alvos do gesto armado). */
+    private fun keyUnder(keys: List<KeyView>, rawX: Float, rawY: Float): KeyView? {
+        val loc = IntArray(2)
+        for (k in keys) {
+            if (k.visibility != View.VISIBLE || k.width == 0) continue
+            k.getLocationOnScreen(loc)
+            if (rawX >= loc[0] && rawX < loc[0] + k.width && rawY >= loc[1] && rawY < loc[1] + k.height) return k
+        }
+        return null
+    }
+
+    /** Alvo do gesto: uma célula, uma letra da faixa ou o botão de página (⟳). */
+    private fun armedTargetAt(rawX: Float, rawY: Float): KeyView? =
+        keyUnder(cellViews, rawX, rawY)
+            ?: keyUnder(letterViews, rawX, rawY)
+            ?: pageButton?.let { keyUnder(listOf(it), rawX, rawY) }
+
+    private var armedDownAt = 0L
+    private var armedMoved = false
+    private var armedStartX = 0f
+    private var armedStartY = 0f
+
     /**
      * "Grade nasce no toque": desceu o dedo numa letra com o QWERTY armado ->
-     * a grade aparece com o token mais provável exatamente sob o dedo; deslizar troca
-     * de célula; soltar escreve o token.
+     * a grade aparece com o token mais provável exatamente sob o dedo.
+     * Onde o dedo SOLTAR decide o que acontece:
+     *  - numa célula: escreve aquele token (toque rápido = o mais provável);
+     *  - numa letra da faixa: escreve a letra;
+     *  - no ⟳: próxima página;
+     *  - segurou parado ~½ s, ou soltou fora de tudo: só deixa a grade aberta.
      */
     private fun onArmedTouch(ev: MotionEvent) {
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 fingerX = ev.rawX; fingerY = ev.rawY
+                armedStartX = ev.rawX; armedStartY = ev.rawY
+                armedDownAt = ev.eventTime
+                armedMoved = false
                 setArmed(false)
                 hybridGrid = true
                 hideOverlay()
@@ -839,16 +868,26 @@ class TrechosKeyboardService : InputMethodService() {
                 armedCell = cellAt(ev.rawX, ev.rawY)?.also { it.isPressed = true; tap(it) }
             }
             MotionEvent.ACTION_MOVE -> {
-                val c = cellAt(ev.rawX, ev.rawY)
-                if (c !== armedCell) {
+                if (!armedMoved && abs(ev.rawX - armedStartX) + abs(ev.rawY - armedStartY) > dp(12)) armedMoved = true
+                if (!armedMoved) return
+                val t = armedTargetAt(ev.rawX, ev.rawY)
+                if (t !== armedCell) {
                     armedCell?.isPressed = false
-                    c?.isPressed = true
-                    armedCell = c
+                    t?.isPressed = true
+                    armedCell = t
                 }
             }
             MotionEvent.ACTION_UP -> {
-                armedCell?.let { c -> c.isPressed = false; pickPiece(c) }
+                val t = armedCell
+                t?.isPressed = false
                 armedCell = null
+                val held = !armedMoved && ev.eventTime - armedDownAt > ARMED_HOLD_MS
+                when {
+                    t == null || held -> Unit                         // só abre a grade
+                    t === pageButton -> changePage(1)
+                    t in letterViews -> (t.tag as? String)?.let { typeLetter(it) }
+                    t in cellViews -> pickPiece(t)
+                }
             }
             MotionEvent.ACTION_CANCEL -> { armedCell?.isPressed = false; armedCell = null }
         }
@@ -1883,6 +1922,8 @@ class TrechosKeyboardService : InputMethodService() {
         private val ACCENT_BG = Color.parseColor("#4D86F7")
         private val ACCENT_PRESSED = Color.parseColor("#6C9BFA")
         private val ARMED_BG = Color.parseColor("#33415A")
+        /** Segurar parado este tempo no toque armado só abre a grade, sem escrever. */
+        private const val ARMED_HOLD_MS = 450L
         private val ACCENT = Color.parseColor("#7FA8FF")
         private val FG = Color.parseColor("#F2F2F4")
         private val HINT_FG = Color.parseColor("#B8B8BE")
