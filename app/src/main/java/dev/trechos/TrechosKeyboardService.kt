@@ -23,7 +23,9 @@ import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import dev.trechos.predict.MemoryUserStore
 import dev.trechos.predict.Predictor
+import dev.trechos.predict.UserStore
 import java.io.File
 import java.util.concurrent.Executors
 import kotlin.math.abs
@@ -45,6 +47,7 @@ class TrechosKeyboardService : InputMethodService() {
     private val worker = Executors.newSingleThreadExecutor()
 
     @Volatile private var predictor: Predictor? = null
+    private var sqliteStore: SqliteUserStore? = null
     private var loadedVersion = -1L
 
     private lateinit var prefs: android.content.SharedPreferences
@@ -114,6 +117,7 @@ class TrechosKeyboardService : InputMethodService() {
     override fun onDestroy() {
         clipboard.removePrimaryClipChangedListener(clipListener)
         worker.shutdownNow()
+        sqliteStore?.close()
         super.onDestroy()
     }
 
@@ -127,10 +131,7 @@ class TrechosKeyboardService : InputMethodService() {
                 assets.open(file).bufferedReader().useLines { p.loadWordList(it, w) }
             }
             p.learnText(assets.open("frases.txt").bufferedReader().readText(), 1f)
-            historyFile().takeIf { it.exists() }?.forEachLine { line ->
-                val tab = line.indexOf('\t')
-                if (tab > 0) p.learnPair(line.substring(0, tab), line.substring(tab + 1), USER_WEIGHT)
-            }
+            p.userStore = openUserStore(p)
             p.warmUp()
             predictor = p
             main.post { refresh() }
@@ -138,6 +139,32 @@ class TrechosKeyboardService : InputMethodService() {
     }
 
     private fun historyFile() = File(filesDir, HISTORY)
+
+    /**
+     * Abre a memória pessoal (SQLite), faz a faxina, migra o histórico antigo
+     * (arquivo de pares de palavras) e coloca as palavras aprendidas no vocabulário.
+     * Se o banco falhar por algum motivo, o teclado segue com uma memória temporária.
+     */
+    private fun openUserStore(p: Predictor): UserStore = try {
+        sqliteStore?.close()
+        val store = SqliteUserStore(this)
+        sqliteStore = store
+        store.prune()
+        historyFile().takeIf { it.exists() }?.let { f ->
+            f.forEachLine { line ->
+                val tab = line.indexOf('\t')
+                if (tab > 0) {
+                    val prev = line.substring(0, tab)
+                    store.learn(if (prev == Predictor.START) emptyList() else listOf(prev), line.substring(tab + 1))
+                }
+            }
+            f.delete()
+        }
+        for ((w, c) in store.followers("", 5000)) p.addUserWord(w, c, USER_WEIGHT)
+        store
+    } catch (_: Exception) {
+        MemoryUserStore()
+    }
 
     override fun onCreateInputView(): View {
         root = FrameLayout(this)
@@ -202,7 +229,11 @@ class TrechosKeyboardService : InputMethodService() {
     // ---------------------------------------------------------------- previsão
 
     private fun textBefore(): String =
-        currentInputConnection?.getTextBeforeCursor(64, 0)?.toString() ?: ""
+        currentInputConnection?.getTextBeforeCursor(160, 0)?.toString() ?: ""
+
+    /** Texto mais longo, só para a previsão: alimenta o cache da conversa. */
+    private fun contextText(): String =
+        currentInputConnection?.getTextBeforeCursor(2000, 0)?.toString() ?: ""
 
     private fun refresh() {
         if (!::root.isInitialized) return
@@ -212,7 +243,7 @@ class TrechosKeyboardService : InputMethodService() {
             showPieces(emptyList())
             return
         }
-        val before = textBefore()
+        val before = contextText()
         val gen = ++generation
         updateBar()
         if (numeric) { showWords(emptyList(), clickable = false); return }
@@ -421,13 +452,11 @@ class TrechosKeyboardService : InputMethodService() {
     private fun learnFrom(text: String) {
         if (!learningEnabled) return
         val p = predictor ?: return
-        val m = Regex("(?:(\\p{L}+)[^\\p{L}.!?\\n]+)?(\\p{L}+)[^\\p{L}]$").find(text) ?: return
-        val word = m.groupValues[2].lowercase()
-        val prev = m.groupValues[1].lowercase().ifEmpty { Predictor.START }
         worker.execute {
-            p.learnPair(prev, word, USER_WEIGHT)
-            p.warmUp()
-            try { historyFile().appendText("$prev\t$word\n") } catch (_: Exception) {}
+            try {
+                p.learnCompleted(text, USER_WEIGHT)   // vai para o banco com as 3 palavras anteriores
+                p.warmUp()
+            } catch (_: Exception) {}
         }
     }
 

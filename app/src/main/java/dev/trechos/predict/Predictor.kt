@@ -5,12 +5,15 @@ import java.text.Normalizer
 /**
  * Motor de previsão sem dependências do Android.
  *
- * Combina dois modelos:
- *  - vocabulário de palavras (unigramas + bigramas): calcula quais trechos
- *    continuam a palavra atual, somando a probabilidade de todas as palavras
- *    que começam com aquele trecho;
- *  - n-gramas de caracteres: cobre palavras que não estão no vocabulário
- *    (nomes, gírias, mistura de línguas).
+ * Combina três fontes:
+ *  - memória pessoal ([UserStore]): o que VOCÊ escreveu depois das mesmas
+ *    3, 2 ou 1 palavras anteriores (backoff), com peso maior para o recente;
+ *  - vocabulário geral (listas de frequência + bigramas de um corpus pequeno);
+ *  - n-gramas de caracteres: cobre palavras que não estão no vocabulário.
+ * Por cima, um cache da conversa dá um bônus às palavras já usadas no texto atual.
+ *
+ * Tudo é calculado como probabilidade de PALAVRAS; os trechos (tokens) da grade
+ * saem daí, somando a probabilidade das palavras que começam com cada trecho.
  */
 class Predictor {
 
@@ -21,6 +24,9 @@ class Predictor {
 
     private val maxCtx = 4
     private val charNodes = HashMap<String, Node>(200_000)
+
+    /** Memória pessoal. Sem ela, o motor usa só o vocabulário geral. */
+    var userStore: UserStore? = null
 
     private val freq = HashMap<String, Float>(60_000)
     private val bigrams = HashMap<String, HashMap<String, Float>>()
@@ -66,6 +72,26 @@ class Predictor {
         if (prev != START) trainChars(" ${prev.takeLast(maxCtx)} $w ", weight * WORD_WEIGHT, from = prev.takeLast(maxCtx).length + 2)
     }
 
+    /**
+     * Aprende com o texto que acabou de ganhar um separador (espaço, pontuação):
+     * a última palavra concluída e as até 3 palavras antes dela.
+     */
+    fun learnCompleted(text: String, weight: Float) {
+        val t = text.lowercase()
+        // exatamente um separador depois da palavra (evita aprender duas vezes com "  ")
+        if (t.length < 2 || t.last().isLetter() || !t[t.length - 2].isLetter()) return
+        val ctx = parse(t.substring(0, t.length - 1))
+        val word = ctx.prefix
+        if (word.isEmpty()) return
+        addWord(word, weight * WORD_WEIGHT)
+        userStore?.learn(ctx.history, word)
+    }
+
+    /** Coloca no vocabulário uma palavra da memória pessoal (na carga do teclado). */
+    fun addUserWord(word: String, count: Float, weight: Float) {
+        if (word.isNotEmpty() && word.all { it.isLetter() }) addWord(word, count * weight * WORD_WEIGHT)
+    }
+
     private fun addWord(w: String, c: Float) {
         if (w.isEmpty()) return
         val old = freq[w]
@@ -89,23 +115,37 @@ class Predictor {
 
     // --------------------------------------------------------------- consulta
 
-    data class Context(val prev: String, val prefix: String)
+    /**
+     * O que o motor enxerga do texto:
+     *  - [prefix]: o pedaço da palavra que está sendo escrita;
+     *  - [history]: as até 3 palavras anteriores na mesma frase ([START] marca o começo da frase);
+     *  - [cache]: quantas vezes cada palavra já apareceu no texto atual.
+     */
+    data class Context(
+        val prev: String,
+        val prefix: String,
+        val history: List<String> = listOf(prev),
+        val cache: Map<String, Int> = emptyMap(),
+    )
 
     fun parse(textBefore: String): Context {
         val t = textBefore.lowercase()
         var i = t.length
         while (i > 0 && t[i - 1].isLetter()) i--
         val prefix = t.substring(i)
-        var j = i
-        var sentenceBreak = false
-        while (j > 0 && !t[j - 1].isLetter()) {
-            if (t[j - 1] in ".!?\n") sentenceBreak = true
-            j--
-        }
-        if (j == 0 || sentenceBreak) return Context(START, prefix)
-        var k = j
-        while (k > 0 && t[k - 1].isLetter()) k--
-        return Context(t.substring(k, j), prefix)
+        val body = t.substring(0, i)
+
+        // janela fixa: só as 3 últimas palavras da frase atual
+        val sentence = body.substring(body.indexOfLast { it in ".!?\n" } + 1)
+        val words = WORD.findAll(sentence.takeLast(200)).map { it.value }.toList()
+        var history = words.takeLast(UserStore.MAX_ORDER)
+        if (words.size < UserStore.MAX_ORDER) history = (listOf(START) + history).takeLast(UserStore.MAX_ORDER)
+
+        // cache da conversa: palavras usadas no texto recente
+        val cache = WORD.findAll(body.takeLast(CACHE_CHARS)).map { it.value }.toList()
+            .takeLast(CACHE_WORDS).groupingBy { it }.eachCount()
+
+        return Context(history.lastOrNull() ?: START, prefix, history, cache)
     }
 
     data class Prediction(val pieces: List<String>, val letters: List<String>)
@@ -190,26 +230,50 @@ class Predictor {
     /** Monta os índices de busca já na carga, para a primeira consulta não travar. */
     fun warmUp() = rebuildIfDirty()
 
-    /** P(palavra | prefixo, palavra anterior) para as palavras candidatas. */
+    /**
+     * P(palavra | prefixo, contexto) para as palavras candidatas.
+     *
+     * 1. Memória pessoal com backoff: procura o que você escreveu depois das últimas
+     *    3 palavras; depois de 2; depois de 1. Os níveis mais específicos pesam mais.
+     * 2. Vocabulário geral: frequência da palavra + bigramas do corpus.
+     * 3. A confiança na memória pessoal cresce com quantas vezes o contexto já foi visto.
+     * 4. Cache da conversa: pequeno bônus para palavras já usadas neste texto.
+     */
     private fun wordCandidates(ctx: Context, accentInsensitive: Boolean): Map<String, Float> {
         rebuildIfDirty()
+        val strippedPrefix = strip(ctx.prefix)
+        fun matches(w: String) = ctx.prefix.isEmpty() ||
+            (if (accentInsensitive) strip(w).startsWith(strippedPrefix) else w.startsWith(ctx.prefix))
+
         val cands = HashSet<String>()
         val follow = bigrams[ctx.prev]
         if (ctx.prefix.isEmpty()) {
             cands.addAll(topWords)
             follow?.keys?.let { cands.addAll(it) }
         } else {
-            val key = strip(ctx.prefix)
-            var i = lowerBound(strippedKeys, key)
+            var i = lowerBound(strippedKeys, strippedPrefix)
             var count = 0
-            while (i < strippedKeys.size && strippedKeys[i].startsWith(key) && count < 20_000) {
+            while (i < strippedKeys.size && strippedKeys[i].startsWith(strippedPrefix) && count < 20_000) {
                 val w = byStripped[i]
-                if (accentInsensitive || w.startsWith(ctx.prefix)) cands.add(w)
+                if (matches(w)) cands.add(w)
                 i++; count++
             }
         }
+
+        // memória pessoal: um mapa por nível de contexto (3, 2, 1 palavras)
+        val levels = ArrayList<Pair<Int, Map<String, Float>>>()
+        userStore?.let { store ->
+            for (k in ctx.history.size downTo 1) {
+                val m = store.followers(ctx.history.takeLast(k).joinToString(" ")).filterKeys { matches(it) }
+                if (m.isNotEmpty()) { levels.add(k to m); cands.addAll(m.keys) }
+            }
+        }
+        // palavras da própria janela quase nunca se repetem logo em seguida: ficam sem bônus
+        val cache = ctx.cache.filterKeys { it != ctx.prefix && it !in ctx.history && matches(it) }
+        cands.addAll(cache.keys)
         if (cands.isEmpty()) return emptyMap()
 
+        // geral
         var uniSum = 0f
         var biSum = 0f
         for (w in cands) {
@@ -217,11 +281,29 @@ class Predictor {
             biSum += follow?.get(w) ?: 0f
         }
         val lambda = if (biSum > 0f) 0.4f else 0f
+
+        // pessoal: mistura os níveis, normalizando os pesos dos níveis que existem
+        val levelWeight = levels.sumOf { ORDER_WEIGHT[it.first].toDouble() }.toFloat()
+        val levelTotals = levels.map { (_, m) -> m.values.sum() }
+        val confidence = levels.firstOrNull()?.let { (k, _) ->
+            val total = levelTotals[0]
+            total / (total + 1.5f) * (0.55f + 0.1f * k)
+        } ?: 0f
+
+        val cacheSum = cache.values.sum().toFloat()
+
         val out = HashMap<String, Float>(cands.size)
         for (w in cands) {
-            val uni = (freq[w] ?: 0f) / uniSum
+            val uni = if (uniSum > 0f) (freq[w] ?: 0f) / uniSum else 0f
             val bi = if (biSum > 0f) (follow?.get(w) ?: 0f) / biSum else 0f
-            out[w] = lambda * bi + (1 - lambda) * uni
+            val general = lambda * bi + (1 - lambda) * uni
+            var personal = 0f
+            levels.forEachIndexed { idx, (k, m) ->
+                personal += ORDER_WEIGHT[k] / levelWeight * ((m[w] ?: 0f) / levelTotals[idx])
+            }
+            var p = confidence * personal + (1 - confidence) * general
+            if (cacheSum > 0f) p = (1 - CACHE_WEIGHT) * p + CACHE_WEIGHT * (cache[w] ?: 0) / cacheSum
+            out[w] = p
         }
         return out
     }
@@ -248,7 +330,9 @@ class Predictor {
         val endMass = words[ctx.prefix] ?: 0f
         if (ctx.prefix.isNotEmpty() && endMass > 0f) {
             out[" "] = (out[" "] ?: 0f) + endMass
-            val next = wordPieceDistribution(Context(ctx.prefix, ""))
+            val next = wordPieceDistribution(
+                Context(ctx.prefix, "", (ctx.history + ctx.prefix).takeLast(UserStore.MAX_ORDER), ctx.cache)
+            )
                 .filterKeys { it.length >= 2 && !it.startsWith(" ") }
                 .entries.sortedByDescending { it.value }.take(12)
             for ((piece, q) in next) {
@@ -316,6 +400,11 @@ class Predictor {
 
     companion object {
         const val START = "<s>"
+        /** Peso de cada nível do backoff: 3 palavras de contexto valem mais que 1. */
+        private val ORDER_WEIGHT = floatArrayOf(0f, 0.2f, 0.3f, 0.5f)
+        private const val CACHE_WEIGHT = 0.07f
+        private const val CACHE_CHARS = 2000
+        private const val CACHE_WORDS = 300
         private const val MAX_PIECE = 4
         private const val MAX_WHOLE = 6
         private const val BEAM = 40

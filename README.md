@@ -22,20 +22,22 @@ O modo escolhido fica salvo: se você sair no modo trechos, o teclado volta nele
 
 ## Como a previsão funciona
 
-Tudo roda no aparelho, sem internet (`app/src/main/java/dev/trechos/predict/Predictor.kt`):
+Tudo roda no aparelho, sem internet (`app/src/main/java/dev/trechos/predict/`).
 
-- **Vocabulário:** listas de frequência de português, inglês e espanhol
-  (`assets/words_*.tsv`, com peso maior para o português). Para cada trecho candidato,
-  o motor soma a probabilidade de todas as palavras que começam com ele.
-- **Contexto:** bigramas ("depois de X vem Y") de `assets/frases.txt` e do seu histórico.
+- **Memória pessoal (SQLite, `memoria.db`):** guarda o que você escreve, contado pelas até
+  **3 palavras anteriores**. Para prever, o motor procura primeiro o que veio depois das últimas
+  3 palavras; se não houver nada, depois das últimas 2; depois de 1 (*backoff*). As contagens
+  perdem metade do peso a cada 60 dias sem uso, então o que você escreveu recentemente vale mais.
+- **Vocabulário geral:** listas de frequência de português, inglês e espanhol, mais os bigramas
+  de `assets/frases.txt`.
+- **Cache da conversa:** palavras já usadas no texto atual ganham um pequeno bônus, o que ajuda a
+  manter o assunto em textos longos.
 - **Caracteres:** n-gramas de até 5 letras cobrem palavras fora do vocabulário.
-- **Pontuação:** cada trecho é ordenado por probabilidade × letras economizadas. Se um
-  trecho mais longo cobre quase todos os casos de um mais curto, o curto sai da grade.
-- **Aprendizado:** cada palavra concluída vai para `historico.tsv`, no armazenamento
-  privado do app. Campos de senha e de número não são registrados. O aprendizado pode ser
-  apagado na tela do app.
+- **Tokens da grade:** tudo é calculado como probabilidade de palavras. Cada trecho recebe a soma
+  das probabilidades das palavras que começam com ele e é ordenado por probabilidade × letras
+  economizadas.
 
-Para mudar as línguas ou os pesos, edite `loadModel()` em `TrechosKeyboardService.kt`.
+Campos de senha e de número não são registrados. O aprendizado pode ser apagado na tela do app.
 
 ## Créditos dos dados
 

@@ -50,6 +50,7 @@ class SetupActivity : Activity() {
             text = "Apagar o que o teclado aprendeu"
             setOnClickListener {
                 File(filesDir, TrechosKeyboardService.HISTORY).delete()
+                deleteDatabase(SqliteUserStore.DB_NAME)
                 getSharedPreferences(TrechosKeyboardService.PREFS, Context.MODE_PRIVATE).edit()
                     .putLong(TrechosKeyboardService.KEY_RESET, System.currentTimeMillis()).apply()
                 Toast.makeText(this@SetupActivity, "Aprendizado apagado", Toast.LENGTH_SHORT).show()
