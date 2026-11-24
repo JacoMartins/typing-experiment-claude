@@ -15,6 +15,8 @@ import androidx.compose.material3.Text
 import dev.trechos.Prefs
 import dev.trechos.TrechosKeyboardService
 import icons.regular.Translate
+import icons.regular.HandSwipeRight
+import icons.regular.Timer
 import icons.regular.Keyboard
 import dev.trechos.settings.SettingsState
 import dev.trechos.settings.ui.components.Header
@@ -85,6 +87,21 @@ fun KeyboardScreen(state: SettingsState, bottomPadding: Dp, modifier: Modifier =
                 range = 2f..5f,
                 valueLabel = "${state.hybridLetters}",
                 onChange = { state.updateHybridLetters(it.roundToInt()) }
+            )
+
+            SectionTitle("Gestos")
+            SwitchRow(
+                PhIcons.Regular.HandSwipeRight, "Swipe de palavras",
+                "Deslize pelas letras; passe pelo espaço sem levantar o dedo para emendar a próxima palavra.",
+                checked = state.swipe, onChange = state::updateSwipe
+            )
+            SliderRow(
+                icon = PhIcons.Regular.Timer,
+                title = "Permanência no modo Fluxo",
+                value = state.dwellMs.toFloat(),
+                range = 150f..900f,
+                valueLabel = "${state.dwellMs} ms",
+                onChange = { state.updateDwellMs(((it / 10).roundToInt() * 10)) }
             )
 
             SectionTitle("Idiomas")

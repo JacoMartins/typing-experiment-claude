@@ -1,6 +1,8 @@
 package dev.trechos.predict
 
 import java.text.Normalizer
+import kotlin.math.hypot
+import kotlin.math.ln
 
 /**
  * Motor de previsão sem dependências do Android.
@@ -330,6 +332,99 @@ class Predictor(val language: String = "pt") {
         else -> 4.6f   // palavra inteira longa: economiza muitos toques
     }
 
+    // ------------------------------------------------------- gesto (swipe de palavras)
+
+    /** Palavras indexadas por (primeira letra, última letra) sem acento, para o decodificador de gestos. */
+    private var byEnds: Map<String, List<String>> = emptyMap()
+
+    /**
+     * Decodifica um gesto de palavra (swipe), no estilo SHARK/ShapeWriter (Zhai & Kristensson):
+     *  1. o traço do dedo é reamostrado em [GESTURE_POINTS] pontos igualmente espaçados;
+     *  2. cada palavra candidata vira um "traço ideal" ligando os centros das suas teclas;
+     *  3. a distância média entre os dois traços (em larguras de tecla) diz o quanto o
+     *     desenho bate com a palavra (canal de localização);
+     *  4. a probabilidade do modelo (contexto, memória pessoal, documento) desempata.
+     * Só entram palavras cuja primeira/última letra estão perto do começo/fim do traço.
+     *
+     * [path]: pontos do traço; [keys]: centro de cada tecla (mesmas coordenadas); [keyW]: largura de tecla.
+     */
+    fun decodeGesture(path: List<FloatArray>, keys: Map<Char, FloatArray>, keyW: Float, textBefore: String, n: Int = 4): List<String> {
+        rebuildIfDirty()
+        if (path.size < 2 || keys.isEmpty()) return emptyList()
+        val user = resample(path, GESTURE_POINTS)
+        val userLen = pathLength(path)
+        fun near(p: FloatArray, r: Float) = keys.filter { (_, c) -> hypot(c[0] - p[0], c[1] - p[1]) <= r * keyW }.keys
+        val starts = near(path.first(), 1.3f)
+        val ends = near(path.last(), 1.3f)
+        if (starts.isEmpty() || ends.isEmpty()) return emptyList()
+
+        // prior do modelo de linguagem para a próxima palavra (sem prefixo)
+        val ctx = parse(textBefore).copy(prefix = "")
+        val lm = wordCandidates(ctx, accentInsensitive = true)
+        val totalFreq = freq.values.sum().coerceAtLeast(1f)
+
+        val scored = ArrayList<Pair<String, Double>>()
+        for (a in starts) for (b in ends) {
+            for (w in byEnds["$a$b"] ?: continue) {
+                val letters = strip(w)
+                val tpl = ArrayList<FloatArray>(letters.length)
+                var ok = true
+                for (ch in letters) {
+                    val c = keys[ch] ?: run { ok = false; null } ?: break
+                    if (tpl.isEmpty() || tpl.last() !== c) tpl.add(c)   // letras repetidas ("ss") = um ponto
+                }
+                if (!ok || tpl.isEmpty()) continue
+                if (tpl.size == 1) tpl.add(tpl[0])
+                val tplLen = pathLength(tpl)
+                // comprimentos muito diferentes: não é essa palavra
+                if (tplLen > 0f && (userLen / tplLen < 0.45f || userLen / tplLen > 2.6f)) continue
+                val t = resample(tpl, GESTURE_POINTS)
+                var d = 0f
+                for (i in 0 until GESTURE_POINTS) d += hypot(t[i][0] - user[i][0], t[i][1] - user[i][1])
+                val dist = d / GESTURE_POINTS / keyW
+                val prior = lm[w] ?: (0.3f * (freq[w] ?: 0f) / totalFreq)
+                val score = -(dist * dist) / (2 * GESTURE_SIGMA * GESTURE_SIGMA) + GESTURE_LM_WEIGHT * ln(prior.toDouble() + 1e-12)
+                scored.add(w to score)
+            }
+        }
+        return scored.sortedByDescending { it.second }.take(n).map { it.first }
+    }
+
+    private fun pathLength(p: List<FloatArray>): Float {
+        var len = 0f
+        for (i in 1 until p.size) len += hypot(p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1])
+        return len
+    }
+
+    /** Reamostra o traço em [n] pontos igualmente espaçados ao longo do caminho. */
+    private fun resample(p: List<FloatArray>, n: Int): List<FloatArray> {
+        val total = pathLength(p)
+        if (total <= 0f) return List(n) { p[0] }
+        val step = total / (n - 1)
+        val out = ArrayList<FloatArray>(n)
+        out.add(p[0])
+        var acc = 0f
+        var prev = p[0]
+        var i = 1
+        while (i < p.size && out.size < n) {
+            val cur = p[i]
+            val seg = hypot(cur[0] - prev[0], cur[1] - prev[1])
+            if (acc + seg >= step && seg > 0f) {
+                val t = (step - acc) / seg
+                val q = floatArrayOf(prev[0] + t * (cur[0] - prev[0]), prev[1] + t * (cur[1] - prev[1]))
+                out.add(q)
+                prev = q
+                acc = 0f
+            } else {
+                acc += seg
+                prev = cur
+                i++
+            }
+        }
+        while (out.size < n) out.add(p.last())
+        return out
+    }
+
     /** Monta os índices de busca já na carga, para a primeira consulta não travar. */
     fun warmUp() = rebuildIfDirty()
 
@@ -516,6 +611,13 @@ class Predictor(val language: String = "pt") {
         strippedKeys = Array(keyed.size) { keyed[it].first }
         byStripped = Array(keyed.size) { keyed[it].second }
         topWords = freq.entries.sortedByDescending { it.value }.take(TOP_WORDS).map { it.key }
+        val ends = HashMap<String, ArrayList<String>>()
+        for (w in freq.keys) {
+            val st = strip(w)
+            if (st.isEmpty() || !st.all { it in 'a'..'z' }) continue
+            ends.getOrPut("${st.first()}${st.last()}") { ArrayList() }.add(w)
+        }
+        byEnds = ends
         dirty = false
     }
 
@@ -547,6 +649,10 @@ class Predictor(val language: String = "pt") {
         private const val CACHE_WORDS = 300
         private const val MAX_PIECE = 4
         private const val MAX_WHOLE = 6
+        private const val GESTURE_POINTS = 32
+        /** Tolerância do gesto (em larguras de tecla) e peso do modelo de linguagem na decisão. */
+        private const val GESTURE_SIGMA = 0.42f
+        private const val GESTURE_LM_WEIGHT = 0.55
         /** Probabilidade mínima para oferecer uma palavra longa inteira como token. */
         private const val WHOLE_WORD_MIN_P = 0.3f
         /** Uma correção precisa ser ~12x mais comum que a palavra exata para vir antes dela. */

@@ -15,6 +15,11 @@ class SwipeLayout(context: Context) : LinearLayout(context) {
 
     var onSwipe: ((Int) -> Unit)? = null
 
+    /** Modo Fluxo: se [capture] aceitar o toque inicial, o gesto inteiro vai para [onCaptured]. */
+    var capture: ((MotionEvent) -> Boolean)? = null
+    var onCaptured: (MotionEvent) -> Unit = {}
+    private var capturing = false
+
     private val slop = ViewConfiguration.get(context).scaledTouchSlop
     private var downX = 0f
     private var downY = 0f
@@ -22,7 +27,11 @@ class SwipeLayout(context: Context) : LinearLayout(context) {
 
     override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
         when (ev.actionMasked) {
-            MotionEvent.ACTION_DOWN -> { downX = ev.x; downY = ev.y; swiping = false }
+            MotionEvent.ACTION_DOWN -> {
+                downX = ev.x; downY = ev.y; swiping = false
+                capturing = capture?.invoke(ev) == true
+                if (capturing) return true
+            }
             MotionEvent.ACTION_MOVE -> {
                 val dx = ev.x - downX
                 val dy = ev.y - downY
@@ -30,10 +39,15 @@ class SwipeLayout(context: Context) : LinearLayout(context) {
                 if (!swiping && abs(dx) > slop * 3 && abs(dx) > abs(dy) * 1.5f) swiping = true
             }
         }
-        return swiping
+        return swiping || capturing
     }
 
     override fun onTouchEvent(ev: MotionEvent): Boolean {
+        if (capturing) {
+            onCaptured(ev)
+            if (ev.actionMasked == MotionEvent.ACTION_UP || ev.actionMasked == MotionEvent.ACTION_CANCEL) capturing = false
+            return true
+        }
         when (ev.actionMasked) {
             MotionEvent.ACTION_UP -> {
                 if (swiping) onSwipe?.invoke(if (ev.x < downX) 1 else -1)

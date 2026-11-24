@@ -44,7 +44,7 @@ class TrechosKeyboardService : InputMethodService() {
      * HIBRIDO: começo de palavra no QWERTY; depois da 1ª letra, a grade continua a palavra;
      * quando a palavra termina, volta ao QWERTY.
      */
-    private enum class Mode { QWERTY, TRECHOS, HIBRIDO }
+    private enum class Mode { QWERTY, TRECHOS, HIBRIDO, FLUXO }
     private enum class Layer { LETTERS, SYM1, SYM2 }
     private enum class Shift { OFF, ONCE, LOCK }
 
@@ -83,6 +83,36 @@ class TrechosKeyboardService : InputMethodService() {
     // "token embaixo do dedo": último ponto tocado (tela) e quando a grade apareceu
     private var fingerX = -1f
     private var fingerY = -1f
+    // ---- swipe de palavras (QWERTY)
+    private var swipeOn = true
+    private val gestureLayers = ArrayList<GestureLayer>()
+    private var trail: TrailView? = null
+    private val segment = ArrayList<FloatArray>()
+    private var inSpace = false
+    private var gestureKeys: Map<Char, FloatArray> = emptyMap()
+    private var gestureKeyW = 1f
+    private var spaceRect = android.graphics.Rect()
+    /** Palavras alternativas do último swipe (aparecem na barra; tocar troca a palavra). */
+    private var gestureAlts: List<String> = emptyList()
+    private var lastGesture = ""
+    @Volatile private var gestureContext = ""
+
+    // ---- modo Fluxo (tokens encadeados por permanência)
+    private var dwellMs = 380L
+    private var flowActive = false
+    private var flowTarget: KeyView? = null
+    private var flowStart = 0L
+    private var flowWaiting = false
+    private var flowCount = 0
+    private var flowMoved = false
+    private var flowDownX = 0f
+    private var flowDownY = 0f
+    private var gridSpaceKey: KeyView? = null
+    private var gridBackKey: KeyView? = null
+    private val flowTick = object : Runnable {
+        override fun run() { flowStep(); if (flowActive) main.postDelayed(this, 16) }
+    }
+
     /** Híbrido: palavra com letras suficientes; o próximo toque numa letra faz a grade nascer sob o dedo. */
     private var gridArmed = false
     private var armedCell: KeyView? = null
@@ -91,7 +121,7 @@ class TrechosKeyboardService : InputMethodService() {
     private var forceLetters = false
 
     /** A grade de tokens está na tela (modo grade, ou híbrido no meio de uma palavra). */
-    private val gridShown get() = mode == Mode.TRECHOS || (mode == Mode.HIBRIDO && hybridGrid)
+    private val gridShown get() = mode == Mode.TRECHOS || mode == Mode.FLUXO || (mode == Mode.HIBRIDO && hybridGrid)
     private var layer = Layer.LETTERS
     private var shift = Shift.OFF
 
@@ -264,6 +294,8 @@ class TrechosKeyboardService : InputMethodService() {
         haptic = prefs.getBoolean(Prefs.HAPTIC, true)
         previewOn = prefs.getBoolean(Prefs.PREVIEW, true)
         hybridLetters = prefs.getInt(Prefs.HYBRID_LETTERS, 4).coerceIn(2, 5)
+        swipeOn = prefs.getBoolean(Prefs.SWIPE, true)
+        dwellMs = prefs.getInt(Prefs.DWELL_MS, 380).coerceIn(150, 900).toLong()
         languages = (prefs.getString(Prefs.LANGUAGES, "pt,en") ?: "pt,en")
             .split(',').filter { it in LANGUAGE_FILES }.ifEmpty { listOf("pt") }
         val saved = prefs.getString(Prefs.LANGUAGE, languages.first()) ?: languages.first()
@@ -278,7 +310,10 @@ class TrechosKeyboardService : InputMethodService() {
                 if (::root.isInitialized) setInputView(onCreateInputView())
             }
             key == Prefs.HAPTIC -> haptic = prefs.getBoolean(Prefs.HAPTIC, true)
-            key == Prefs.HYBRID_LETTERS -> readSettings()
+            key == Prefs.HYBRID_LETTERS || key == Prefs.SWIPE || key == Prefs.DWELL_MS -> {
+                readSettings()
+                gestureLayers.forEach { it.enabled = swipeOn }
+            }
             key == Prefs.LANGUAGES || key == Prefs.LANGUAGE -> {
                 readSettings()
                 setLanguage(language)
@@ -535,8 +570,19 @@ class TrechosKeyboardService : InputMethodService() {
                 pieceFixes = pr?.fixes ?: emptyMap()
                 letters = pr?.letters ?: emptyList()
                 page = 0
-                showWords(ws.map { caseLike(before, it, wholeWord = true) }, clickable = true)
+                if (gestureAlts.isNotEmpty() && lastGesture.isNotEmpty() && textBefore().endsWith(lastGesture)) {
+                    words = gestureAlts   // logo depois de um swipe: a barra mostra as outras leituras do traço
+                    showWords(gestureAlts, clickable = true)
+                } else {
+                    gestureAlts = emptyList()
+                    showWords(ws.map { caseLike(before, it, wholeWord = true) }, clickable = true)
+                }
                 showPieces(pieces)
+                if (flowActive) {
+                    // tokens novos chegaram: a permanência recomeça na célula sob o dedo
+                    flowWaiting = false
+                    startDwell(flowTargetAt(fingerX, fingerY))
+                }
 
             }
         }
@@ -664,6 +710,16 @@ class TrechosKeyboardService : InputMethodService() {
     private fun pickWord(i: Int) {
         val w = words.getOrNull(i) ?: return
         val ic = currentInputConnection ?: return
+        // trocar a palavra do último swipe por outra leitura do traço
+        if (gestureAlts.isNotEmpty() && lastGesture.isNotEmpty() && textBefore().endsWith(lastGesture)) {
+            ic.beginBatchEdit()
+            ic.deleteSurroundingText(lastGesture.length, 0)
+            commit("$w ")
+            ic.endBatchEdit()
+            lastGesture = "$w "
+            lastAutoSpace = true
+            return
+        }
         val before = textBefore()
         var start = before.length
         while (start > 0 && before[start - 1].isLetter()) start--
@@ -802,6 +858,175 @@ class TrechosKeyboardService : InputMethodService() {
         for ((k, _) in letterKeys) { k.bg = if (on) ARMED_BG else KEY_BG; k.invalidate() }
     }
 
+    // ================================================================ swipe de palavras
+
+    private fun wrapGesture(qwerty: View): View = GestureLayer(this).apply {
+        addView(qwerty)
+        enabled = swipeOn
+        threshold = dp(26).toFloat()
+        startsOnLetter = { x, y -> layer == Layer.LETTERS && letterKeyAt(x, y) != null }
+        onGestureStart = { pts -> gestureStart(pts) }
+        onGestureMove = { x, y -> gestureMove(x, y) }
+        onGestureEnd = { gestureEnd() }
+        gestureLayers.add(this)
+    }
+
+    private fun gestureStart(early: List<FloatArray>) {
+        hidePreview(); hideAccents()
+        // geometria do teclado agora (centros das letras, largura de tecla, área do espaço)
+        val loc = IntArray(2)
+        val centers = HashMap<Char, FloatArray>()
+        val widths = ArrayList<Float>()
+        for ((k, base) in letterKeys) {
+            if (!k.isShown) continue
+            k.getLocationOnScreen(loc)
+            val w = k.width * (1f - k.extraLeft - k.extraRight)
+            val left = loc[0] + k.width * k.extraLeft
+            centers[base[0]] = floatArrayOf(left + w / 2f, loc[1] + k.height / 2f)
+            widths.add(w)
+        }
+        gestureKeys = centers
+        gestureKeyW = widths.sorted().getOrElse(widths.size / 2) { dp(36).toFloat() }
+        spaceRect = android.graphics.Rect()
+        spaceViews.firstOrNull { it.isShown }?.let { sp ->
+            sp.getLocationOnScreen(loc)
+            spaceRect.set(loc[0], loc[1], loc[0] + sp.width, loc[1] + sp.height)
+        }
+        segment.clear(); segment.addAll(early)
+        inSpace = false
+        val start = textBefore()
+        bg { gestureContext = start }
+        // rastro do dedo
+        val tv = TrailView(this, ACCENT, dp(5).toFloat())
+        overlay.addView(tv, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        trail = tv
+        val o = IntArray(2)
+        overlay.getLocationOnScreen(o)
+        for (pt in early) tv.add(pt[0] - o[0], pt[1] - o[1])
+    }
+
+    private fun gestureMove(x: Float, y: Float) {
+        trail?.let { t -> val o = IntArray(2); overlay.getLocationOnScreen(o); t.add(x - o[0], y - o[1]) }
+        // passar pelo espaço fecha a palavra e começa a próxima, sem levantar o dedo
+        if (spaceRect.contains(x.toInt(), y.toInt())) {
+            if (!inSpace) { inSpace = true; finishSegment(); trail?.clear() }
+        } else {
+            if (inSpace) { inSpace = false; segment.clear() }
+            segment.add(floatArrayOf(x, y))
+        }
+    }
+
+    private fun gestureEnd() {
+        if (!inSpace) finishSegment()
+        trail?.let { t -> t.animate().alpha(0f).setDuration(150).withEndAction { overlay.removeView(t) }.start() }
+        trail = null
+    }
+
+    /** Decodifica o trecho do traço (uma palavra) em segundo plano e escreve o resultado na ordem certa. */
+    private fun finishSegment() {
+        val pts = segment.toList()
+        segment.clear()
+        if (pts.size < 2) return
+        var len = 0f
+        for (i in 1 until pts.size) len += kotlin.math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1])
+        if (len < gestureKeyW * 0.5f) return
+        val p = predictor ?: return
+        val keys = gestureKeys
+        val kw = gestureKeyW
+        bg {
+            val words = p.decodeGesture(pts, keys, kw, gestureContext)
+            val w = words.firstOrNull() ?: return@bg
+            gestureContext += "$w "
+            main.post { commitGestureWord(w, words) }
+        }
+    }
+
+    private fun commitGestureWord(w: String, alts: List<String>) {
+        val before = textBefore()
+        val sep = if (before.isNotEmpty() && before.last().isLetterOrDigit()) " " else ""
+        val shown = caseLike(before + sep, w, wholeWord = true)
+        commit("$sep$shown ")
+        learnFrom("$before$sep$shown ")
+        pieceStack.clear()
+        lastAutoSpace = true
+        lastGesture = "$shown "
+        gestureAlts = alts.map { caseLike(before + sep, it, wholeWord = true) }
+    }
+
+    // ================================================================ modo Fluxo
+
+    /** Alvos do Fluxo: as células, o espaço e o ⌫ da grade. */
+    private fun flowTargetAt(x: Float, y: Float): KeyView? =
+        keyUnder(cellViews, x, y)
+            ?: gridSpaceKey?.let { keyUnder(listOf(it), x, y) }
+            ?: gridBackKey?.let { keyUnder(listOf(it), x, y) }
+
+    /**
+     * Fluxo: o dedo fica na grade. Parar sobre uma célula por [dwellMs] escreve o token
+     * (a barrinha embaixo da célula enche); o próximo token mais provável nasce sob o dedo
+     * e a permanência recomeça. Passar por cima de células não escreve nada.
+     * Espaço e ⌫ também funcionam por permanência. Um toque rápido funciona como toque normal.
+     */
+    private fun onFlowTouch(ev: MotionEvent) {
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                flowActive = true
+                flowCount = 0
+                flowMoved = false
+                flowWaiting = false
+                flowDownX = ev.rawX; flowDownY = ev.rawY
+                fingerX = ev.rawX; fingerY = ev.rawY
+                startDwell(flowTargetAt(ev.rawX, ev.rawY))
+                main.removeCallbacks(flowTick)
+                main.post(flowTick)
+            }
+            MotionEvent.ACTION_MOVE -> {
+                fingerX = ev.rawX; fingerY = ev.rawY
+                if (!flowMoved && abs(ev.rawX - flowDownX) + abs(ev.rawY - flowDownY) > dp(10)) flowMoved = true
+                val t = flowTargetAt(ev.rawX, ev.rawY)
+                if (t !== flowTarget) startDwell(t)
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                val t = flowTarget
+                endFlow()
+                // toque rápido sem nada escrito: funciona como toque comum na célula
+                if (ev.actionMasked == MotionEvent.ACTION_UP && !flowMoved && flowCount == 0 && t != null && t in cellViews) pickPiece(t)
+            }
+        }
+    }
+
+    private fun startDwell(t: KeyView?) {
+        flowTarget?.let { it.progress = 0f; it.isPressed = false }
+        flowTarget = t
+        flowStart = android.os.SystemClock.uptimeMillis()
+        t?.isPressed = true
+    }
+
+    private fun flowStep() {
+        val t = flowTarget ?: return
+        if (flowWaiting) { flowStart = android.os.SystemClock.uptimeMillis(); t.progress = 0f; return }
+        val f = (android.os.SystemClock.uptimeMillis() - flowStart).toFloat() / dwellMs
+        t.progress = f
+        if (f < 1f) return
+        // permanência completa: escreve
+        t.progress = 0f
+        if (haptic) t.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+        flowCount++
+        when {
+            t === gridBackKey -> { backspace(); flowStart = android.os.SystemClock.uptimeMillis() }
+            t === gridSpaceKey -> { space(); flowWaiting = true }
+            t in cellViews -> { pickPiece(t); flowWaiting = true }
+        }
+    }
+
+    private fun endFlow() {
+        flowActive = false
+        main.removeCallbacks(flowTick)
+        flowTarget?.let { it.progress = 0f; it.isPressed = false }
+        flowTarget = null
+        flowWaiting = false
+    }
+
     /** A tecla de letra (do QWERTY do híbrido) sob este ponto da tela, se houver. */
     private fun letterKeyAt(rawX: Float, rawY: Float): KeyView? {
         val loc = IntArray(2)
@@ -920,7 +1145,7 @@ class TrechosKeyboardService : InputMethodService() {
      * para confirmar sem mover a mão (Lei de Fitts).
      */
     private fun cellOrder(): IntArray {
-        if (mode != Mode.HIBRIDO || fingerX < 0f || cellViews.size < 9) return GRID_ORDER
+        if ((mode != Mode.HIBRIDO && mode != Mode.FLUXO) || fingerX < 0f || cellViews.size < 9) return GRID_ORDER
         val loc = IntArray(2)
         val dist = cellViews.mapIndexed { i, c ->
             c.getLocationOnScreen(loc)
@@ -933,6 +1158,7 @@ class TrechosKeyboardService : InputMethodService() {
     }
 
     private fun setMode(m: Mode) {
+        endFlow()
         gridArmed = false
         hybridGrid = false
         forceLetters = false
@@ -1220,6 +1446,7 @@ class TrechosKeyboardService : InputMethodService() {
         if (mode != Mode.QWERTY) item("Teclado QWERTY", R.drawable.ic_keyboard) { setMode(Mode.QWERTY) }
         if (mode != Mode.TRECHOS) item("Grade de trechos", R.drawable.ic_grid) { setMode(Mode.TRECHOS) }
         if (mode != Mode.HIBRIDO) item("Híbrido: letra + trechos", R.drawable.ic_rows) { setMode(Mode.HIBRIDO) }
+        if (mode != Mode.FLUXO) item("Fluxo: tokens sem levantar o dedo", R.drawable.ic_dots_six) { setMode(Mode.FLUXO) }
         item("Configurações", R.drawable.ic_settings) {
             startActivity(Intent(this, dev.trechos.settings.SettingsActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }
@@ -1448,13 +1675,16 @@ class TrechosKeyboardService : InputMethodService() {
         barNormal.visibility = if (numeric || clipOpen) View.GONE else View.VISIBLE
         hybridQwerty = null
         hybridGridView = null
+        gestureLayers.clear()
+        gridSpaceKey = null
+        gridBackKey = null
         gridArmed = false   // teclas novas nascem normais; o refresh arma de novo se for o caso
         when {
             numeric -> body.addView(buildNumpad())      // campo de número: teclado numérico, sem mudar o modo salvo
             mode == Mode.HIBRIDO -> {
                 // os dois teclados ficam montados; a troca a cada palavra só alterna qual aparece
                 val q = ArmLayout(this).apply {
-                    addView(buildQwerty())
+                    addView(wrapGesture(buildQwerty()))
                     shouldIntercept = { ev -> gridArmed && letterKeyAt(ev.rawX, ev.rawY) != null }
                     onArmedTouch = { ev -> this@TrechosKeyboardService.onArmedTouch(ev) }
                 }
@@ -1467,7 +1697,7 @@ class TrechosKeyboardService : InputMethodService() {
                 g.visibility = if (hybridGrid) View.VISIBLE else View.INVISIBLE
             }
             gridShown -> body.addView(buildGrid())
-            else -> body.addView(buildQwerty())
+            else -> body.addView(wrapGesture(buildQwerty()))
         }
         showPieces(pieces)
         updateBar()
@@ -1514,7 +1744,9 @@ class TrechosKeyboardService : InputMethodService() {
         // as 3 fileiras da grade reconhecem deslize horizontal: troca de página (além do botão ⟳)
         val rows = SwipeLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            onSwipe = { dir -> changePage(dir) }
+            onSwipe = { dir -> if (mode != Mode.FLUXO) changePage(dir) }
+            capture = { ev -> mode == Mode.FLUXO && keyUnder(cellViews, ev.rawX, ev.rawY) != null }
+            onCaptured = { ev -> onFlowTouch(ev) }
         }
         col.addView(rows)
         for (r in 0 until 3) {
@@ -1526,7 +1758,7 @@ class TrechosKeyboardService : InputMethodService() {
                 row.addView(cell, LinearLayout.LayoutParams(0, kh(gridCellH()), 1f).margins())
             }
             val side = when (r) {
-                0 -> kv(bg = FN_BG, iconRes = R.drawable.ic_backspace).also { repeating(it) { backspace() } }
+                0 -> kv(bg = FN_BG, iconRes = R.drawable.ic_backspace).also { repeating(it) { backspace() }; gridBackKey = it }
                 1 -> kv("⟳", FN_BG, 20f) { changePage(1) }.also { pageButton = it }
                 else -> enterKey()
             }
@@ -1590,7 +1822,7 @@ class TrechosKeyboardService : InputMethodService() {
             bottom.addView(kv("ABC", FN_BG, 17f) { setMode(Mode.QWERTY) }, keyParams(1.25f))
         }
         bottom.addView(kv(",", FN_BG, 22f) { punct(",") }, keyParams(0.9f))
-        bottom.addView(spaceKey(), keyParams(3.2f))
+        bottom.addView(spaceKey().also { gridSpaceKey = it }, keyParams(3.2f))
         bottom.addView(kv(".", FN_BG, 22f) { punct(".") }, keyParams(0.9f))
         bottom.addView(kv("?", FN_BG, 22f) { punct("?") }, keyParams(0.9f))
         col.addView(bottom)

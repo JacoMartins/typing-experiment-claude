@@ -41,6 +41,14 @@ class SettingsState(private val context: Context) {
 
     fun updateHybridLetters(v: Int) { hybridLetters = v; prefs.edit().putInt(Prefs.HYBRID_LETTERS, v).apply() }
 
+    var swipe by mutableStateOf(prefs.getBoolean(Prefs.SWIPE, true))
+        private set
+    fun updateSwipe(v: Boolean) { swipe = v; prefs.edit().putBoolean(Prefs.SWIPE, v).apply() }
+
+    var dwellMs by mutableIntStateOf(prefs.getInt(Prefs.DWELL_MS, 380))
+        private set
+    fun updateDwellMs(v: Int) { dwellMs = v; prefs.edit().putInt(Prefs.DWELL_MS, v).apply() }
+
     /** Idiomas ativados; segurar o espaço alterna entre eles. */
     var languages by mutableStateOf(
         (prefs.getString(Prefs.LANGUAGES, "pt,en") ?: "pt,en").split(',').filter { it.isNotBlank() }

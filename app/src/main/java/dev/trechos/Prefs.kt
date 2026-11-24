@@ -21,6 +21,12 @@ object Prefs {
     /** Modo híbrido: quantas letras no QWERTY antes de a grade aparecer (2 a 5). */
     const val HYBRID_LETTERS = "hibrido_letras"
 
+    /** Swipe de palavras no QWERTY ligado. */
+    const val SWIPE = "swipe"
+
+    /** Modo Fluxo: tempo parado sobre uma célula para escrever o token (ms). */
+    const val DWELL_MS = "fluxo_permanencia"
+
     /** Altura do teclado: 0.8 a 1.3 (1.0 = padrão). */
     const val HEIGHT = "altura"
 

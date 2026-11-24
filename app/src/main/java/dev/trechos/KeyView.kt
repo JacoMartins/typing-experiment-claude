@@ -41,6 +41,11 @@ class KeyView(context: Context) : View(context) {
     var insetX = 0f
     var insetY = 0f
 
+    /** Progresso da permanência (modo Fluxo): 0..1, desenhado como uma barra embaixo da tecla. */
+    var progress = 0f
+        set(v) { field = v; invalidate() }
+    var progressColor = 0xFF7FA8FF.toInt()
+
     /** Fração extra de área de toque à esquerda/direita (ex.: o "a" e o "l" da fileira do meio). */
     var extraLeft = 0f
     var extraRight = 0f
@@ -144,6 +149,13 @@ class KeyView(context: Context) : View(context) {
             hintPaint.textSize = h * 0.21f
             val pad = h * 0.11f
             canvas.drawText(hn, rect.right - pad, rect.top + pad + hintPaint.textSize * 0.8f, hintPaint)
+        }
+        if (progress > 0f) {
+            edgePaint.color = progressColor
+            val barH = h * 0.07f
+            edgeRect.set(rect.left + radiusPx * 0.6f, rect.bottom - barH * 2f,
+                rect.left + radiusPx * 0.6f + (rect.width() - radiusPx * 1.2f) * progress.coerceIn(0f, 1f), rect.bottom - barH)
+            canvas.drawRoundRect(edgeRect, barH, barH, edgePaint)
         }
         canvas.restore()
     }
