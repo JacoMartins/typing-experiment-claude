@@ -586,19 +586,52 @@ class TrechosKeyboardService : InputMethodService() {
         }
     }
 
+    /**
+     * A ação que o app pediu para o Enter (Enviar, Buscar, Ir, Próximo, Concluir),
+     * ou null se o Enter deve pular linha. Campos de várias linhas comuns já vêm com
+     * IME_FLAG_NO_ENTER_ACTION; quando o app NÃO põe essa marca (ex.: chat com Enviar),
+     * o Enter envia mesmo em campo de várias linhas.
+     */
+    private fun enterAction(): Int? {
+        val opts = currentInputEditorInfo?.imeOptions ?: 0
+        val action = opts and EditorInfo.IME_MASK_ACTION
+        val noEnterAction = (opts and EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0
+        return if (noEnterAction || action == EditorInfo.IME_ACTION_NONE || action == EditorInfo.IME_ACTION_UNSPECIFIED) null else action
+    }
+
     private fun enter() {
-        val info = currentInputEditorInfo
-        val action = (info?.imeOptions ?: 0) and EditorInfo.IME_MASK_ACTION
-        val noEnterAction = ((info?.imeOptions ?: 0) and EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0
-        val multiLine = ((info?.inputType ?: 0) and InputType.TYPE_TEXT_FLAG_MULTI_LINE) != 0
         pieceStack.clear()
         lastAutoSpace = false
-        if (!multiLine && !noEnterAction && action != EditorInfo.IME_ACTION_NONE && action != EditorInfo.IME_ACTION_UNSPECIFIED) {
+        val action = enterAction()
+        if (action != null) {
+            learnFrom(textBefore() + "\n")   // a mensagem enviada também ensina a última palavra
             currentInputConnection?.performEditorAction(action)
         } else {
-            learnFrom(textBefore() + "\n")
-            commit("\n")
+            newline()
         }
+    }
+
+    private fun newline() {
+        pieceStack.clear()
+        lastAutoSpace = false
+        learnFrom(textBefore() + "\n")
+        commit("\n")
+    }
+
+    /** Tecla Enter com o ícone da ação (avião = Enviar, lupa = Buscar...). Segurar sempre pula linha. */
+    private fun enterKey(): KeyView {
+        val action = enterAction()
+        val icon = when (action) {
+            EditorInfo.IME_ACTION_SEND -> R.drawable.ic_send
+            EditorInfo.IME_ACTION_SEARCH -> R.drawable.ic_search
+            EditorInfo.IME_ACTION_GO, EditorInfo.IME_ACTION_NEXT -> R.drawable.ic_arrow_right
+            EditorInfo.IME_ACTION_DONE -> R.drawable.ic_check
+            else -> R.drawable.ic_enter
+        }
+        val k = kv(bg = if (action != null) ACCENT_BG else FN_BG, iconRes = icon) { enter() }
+        if (action != null) k.pressedBg = ACCENT_PRESSED
+        k.setOnLongClickListener { v -> tap(v); newline(); true }
+        return k
     }
 
     private fun setMode(m: Mode) {
@@ -1064,6 +1097,20 @@ class TrechosKeyboardService : InputMethodService() {
         }
     }
 
+    /** Troca a página da grade (+1 próxima, -1 anterior), com as células deslizando. */
+    private fun changePage(dir: Int) {
+        val pages = maxOf(1, (pieces.size + 8) / 9)
+        if (pages < 2) return
+        page = (page + dir + pages) % pages
+        showPieces(pieces)
+        val dx = dp(36).toFloat() * dir
+        for (c in cellViews) {
+            c.translationX = dx
+            c.alpha = 0f
+            c.animate().translationX(0f).alpha(1f).setDuration(170).setInterpolator(decel).start()
+        }
+    }
+
     // ---------------------------------------------------------------- animações
 
     private val decel = android.view.animation.DecelerateInterpolator(1.6f)
@@ -1145,6 +1192,12 @@ class TrechosKeyboardService : InputMethodService() {
 
     private fun buildGrid(): View {
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        // as 3 fileiras da grade reconhecem deslize horizontal: troca de página (além do botão ⟳)
+        val rows = SwipeLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            onSwipe = { dir -> changePage(dir) }
+        }
+        col.addView(rows)
         for (r in 0 until 3) {
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             for (c in 0 until 3) {
@@ -1155,15 +1208,11 @@ class TrechosKeyboardService : InputMethodService() {
             }
             val side = when (r) {
                 0 -> kv(bg = FN_BG, iconRes = R.drawable.ic_backspace).also { repeating(it) { backspace() } }
-                1 -> kv("⟳", FN_BG, 20f) {
-                    val pages = maxOf(1, (pieces.size + 8) / 9)
-                    page = (page + 1) % pages
-                    showPieces(pieces)
-                }.also { pageButton = it }
-                else -> kv(bg = FN_BG, iconRes = R.drawable.ic_enter) { enter() }
+                1 -> kv("⟳", FN_BG, 20f) { changePage(1) }.also { pageButton = it }
+                else -> enterKey()
             }
             row.addView(side, LinearLayout.LayoutParams(0, kh(68), 0.8f).margins())
-            col.addView(row)
+            rows.addView(row)
         }
         // faixa de letras: TODAS as letras, da mais provável para a menos provável.
         // Desliza para o lado; as bordas esmaecem e a barrinha embaixo mostra onde você está.
@@ -1265,7 +1314,7 @@ class TrechosKeyboardService : InputMethodService() {
         bottom.addView(kv(",", KEY_BG, 22f) { punct(",") }, keyParams(1f))
         bottom.addView(spaceKey(), keyParams(4f))
         bottom.addView(kv(".", KEY_BG, 22f) { punct(".") }, keyParams(1f))
-        bottom.addView(kv(bg = FN_BG, iconRes = R.drawable.ic_enter) { enter() }, keyParams(1.45f))
+        bottom.addView(enterKey(), keyParams(1.45f))
         col.addView(bottom)
         return col
     }
@@ -1512,6 +1561,7 @@ class TrechosKeyboardService : InputMethodService() {
         private val MENU_BG = Color.parseColor("#2A2A2D")
         private val CHIP_BG = Color.parseColor("#26324A")
         private val ACCENT_BG = Color.parseColor("#4D86F7")
+        private val ACCENT_PRESSED = Color.parseColor("#6C9BFA")
         private val ACCENT = Color.parseColor("#7FA8FF")
         private val FG = Color.parseColor("#F2F2F4")
         private val HINT_FG = Color.parseColor("#B8B8BE")
