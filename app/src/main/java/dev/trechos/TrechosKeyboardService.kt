@@ -108,7 +108,7 @@ class TrechosKeyboardService : InputMethodService() {
         root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(BG)
-            setPadding(dp(4), dp(4), dp(4), dp(8))
+            setPadding(dp(5), dp(4), dp(5), dp(10))
         }
         wordBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         wordViews.clear()
@@ -483,7 +483,7 @@ class TrechosKeyboardService : InputMethodService() {
         if (layer != Layer.SYMBOLS) {
             val nums = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             for (d in "1234567890") {
-                nums.addView(key(d.toString(), FN_BG, 17f) { typeChar(d.toString()) }, keyParams(1f, 40))
+                nums.addView(key(d.toString(), KEY_BG, 23f) { typeChar(d.toString()) }, keyParams(1f))
             }
             col.addView(nums)
         }
@@ -491,13 +491,13 @@ class TrechosKeyboardService : InputMethodService() {
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             if (idx == 2) {
                 if (layer == Layer.SYMBOLS) {
-                    row.addView(key("áé", FN_BG, 16f) { layer = Layer.ACCENTS; buildBody() }, keyParams(1.5f))
+                    row.addView(key("áé", FN_BG, 17f) { layer = Layer.ACCENTS; buildBody() }, keyParams(1.45f))
                 } else {
                     val label = when (shift) { Shift.OFF -> "⇧"; Shift.ONCE -> "⬆"; Shift.LOCK -> "⇪" }
-                    row.addView(key(label, if (shift == Shift.OFF) FN_BG else CELL_BG, 20f) {
+                    row.addView(key(label, if (shift == Shift.OFF) FN_BG else CELL_BG, 24f) {
                         shift = when (shift) { Shift.OFF -> Shift.ONCE; Shift.ONCE -> Shift.LOCK; Shift.LOCK -> Shift.OFF }
                         buildBody(); refresh()
-                    }, keyParams(1.5f))
+                    }, keyParams(1.45f))
                 }
             }
             // fileira do meio com 9 teclas, recuada meia tecla de cada lado
@@ -506,30 +506,30 @@ class TrechosKeyboardService : InputMethodService() {
             for (ch in chars) {
                 val s = ch.toString()
                 val shown = if (shift != Shift.OFF) s.uppercase() else s
-                val k = key(shown, KEY_BG, 22f) { typeChar(s) }
+                val k = key(shown, KEY_BG, 24f) { typeChar(s) }
                 // segurar o c digita ç
                 if (s == "c") k.setOnLongClickListener { tap(it); typeChar("ç"); true }
                 row.addView(k, keyParams(1f))
             }
             if (inset) row.addView(View(this), keyParams(0.5f))
-            if (idx == 2) row.addView(key("⌫", FN_BG, 20f, onClick = null).also { v -> repeating(v) { backspace() } }, keyParams(1.5f))
+            if (idx == 2) row.addView(key("⌫", FN_BG, 22f, onClick = null).also { v -> repeating(v) { backspace() } }, keyParams(1.45f))
             col.addView(row)
         }
+        // última fileira no estilo Samsung: !#1  ,  espaço  .  ↵  (+ ⊞ para a grade)
         val bottom = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        bottom.addView(key(if (layer == Layer.LETTERS) "?123" else "ABC", FN_BG, 15f) {
+        bottom.addView(key(if (layer == Layer.LETTERS) "!#1" else "ABC", FN_BG, 17f) {
             layer = if (layer == Layer.LETTERS) Layer.SYMBOLS else Layer.LETTERS; buildBody()
-        }, keyParams(1.3f))
-        // tecla que troca para a grade de trechos
-        bottom.addView(key("⊞", CELL_BG, 22f, bold = true) { setMode(Mode.TRECHOS) }, keyParams(1.1f))
-        bottom.addView(key(",", FN_BG, 20f) { punct(",") }, keyParams(0.9f))
-        bottom.addView(key("espaço", KEY_BG, 14f) { space() }, keyParams(3.6f))
-        bottom.addView(key(".", FN_BG, 20f) { punct(".") }, keyParams(0.9f))
-        bottom.addView(key("↵", FN_BG, 20f) { enter() }, keyParams(1.4f))
+        }, keyParams(1.25f))
+        bottom.addView(key("⊞", CELL_BG, 22f, bold = true) { setMode(Mode.TRECHOS) }, keyParams(1f))
+        bottom.addView(key(",", FN_BG, 22f) { punct(",") }, keyParams(1f))
+        bottom.addView(key("Português (BR)", KEY_BG, 14f) { space() }, keyParams(4.2f))
+        bottom.addView(key(".", FN_BG, 22f) { punct(".") }, keyParams(1f))
+        bottom.addView(key("↵", FN_BG, 24f) { enter() }, keyParams(1.45f))
         col.addView(bottom)
         return col
     }
 
-    private fun keyParams(w: Float, heightDp: Int = 50) =
+    private fun keyParams(w: Float, heightDp: Int = 52) =
         LinearLayout.LayoutParams(0, dp(heightDp), w).margins()
 
     // ---------------------------------------------------------------- utilitários de view
@@ -555,7 +555,7 @@ class TrechosKeyboardService : InputMethodService() {
         if (onClick != null) setOnClickListener { tap(it); onClick(it) }
     }
 
-    private fun rounded(color: Int) = GradientDrawable().apply { cornerRadius = dp(8).toFloat(); setColor(color) }
+    private fun rounded(color: Int) = GradientDrawable().apply { cornerRadius = dp(10).toFloat(); setColor(color) }
 
     /** Segurar repete a ação (usado no apagar). */
     private fun repeating(v: View, action: () -> Unit) {
@@ -593,13 +593,13 @@ class TrechosKeyboardService : InputMethodService() {
 
         private val GRID_ORDER = intArrayOf(4, 1, 7, 3, 5, 0, 2, 6, 8)
 
-        private val BG = Color.parseColor("#17181B")
-        private val KEY_BG = Color.parseColor("#3A3C42")
-        private val FN_BG = Color.parseColor("#2A2C31")
+        private val BG = Color.parseColor("#121212")
+        private val KEY_BG = Color.parseColor("#2B2B2D")
+        private val FN_BG = Color.parseColor("#2B2B2D")
         private val CELL_BG = Color.parseColor("#2E4A6E")
-        private val BAR_BG = Color.parseColor("#24262B")
+        private val BAR_BG = Color.parseColor("#121212")
         private val FG = Color.parseColor("#F1F2F4")
-        private val PRESSED_BG = Color.parseColor("#5A6070")
+        private val PRESSED_BG = Color.parseColor("#4A4A4E")
         private val ACCENT = Color.parseColor("#6FA8FF")
     }
 }
