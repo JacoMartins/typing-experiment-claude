@@ -49,6 +49,8 @@ class KeyView(context: Context) : View(context) {
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
     private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.RIGHT }
     private val rect = RectF()
+    private val edgeRect = RectF()
+    private val edgePaint = Paint(Paint.ANTI_ALIAS_FLAG)
 
     // animação de toque: 0 = solta, 1 = pressionada
     private var press = 0f
@@ -97,7 +99,23 @@ class KeyView(context: Context) : View(context) {
         val scale = 1f - 0.05f * press
         canvas.save()
         canvas.scale(scale, scale, cx, cy)
-        if (bgPaint.color != 0) canvas.drawRoundRect(rect, radiusPx, radiusPx, bgPaint)
+        if (bgPaint.color != 0) {
+            // Borda de luz bem sutil para um 3D leve:
+            //  - tecla escura: linha clara no TOPO (luz batendo de cima);
+            //  - tecla clara: linha escura na BASE (sombra embaixo).
+            val edge = resources.displayMetrics.density   // 1dp
+            if (isLight(bg)) {
+                edgePaint.color = 0x1F000000              // preto ~12%
+                edgeRect.set(rect.left, rect.top + edge, rect.right, rect.bottom + edge)
+                canvas.drawRoundRect(edgeRect, radiusPx, radiusPx, edgePaint)
+                canvas.drawRoundRect(rect, radiusPx, radiusPx, bgPaint)
+            } else {
+                edgePaint.color = 0x17FFFFFF              // branco ~9%
+                canvas.drawRoundRect(rect, radiusPx, radiusPx, edgePaint)
+                edgeRect.set(rect.left, rect.top + edge, rect.right, rect.bottom)
+                canvas.drawRoundRect(edgeRect, radiusPx, radiusPx, bgPaint)
+            }
+        }
 
         val ic = icon
         if (ic != null) {
@@ -132,5 +150,13 @@ class KeyView(context: Context) : View(context) {
 
     private companion object {
         val EVAL = ArgbEvaluator()
+
+        /** A cor é clara? (luminância aproximada) */
+        fun isLight(c: Int): Boolean {
+            val r = (c shr 16) and 0xFF
+            val g = (c shr 8) and 0xFF
+            val b = c and 0xFF
+            return 0.299 * r + 0.587 * g + 0.114 * b > 150
+        }
     }
 }
