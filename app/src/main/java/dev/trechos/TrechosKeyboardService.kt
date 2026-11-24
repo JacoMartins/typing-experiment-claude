@@ -108,7 +108,7 @@ class TrechosKeyboardService : InputMethodService() {
         root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(BG)
-            setPadding(dp(3), dp(4), dp(3), dp(6))
+            setPadding(dp(4), dp(4), dp(4), dp(8))
         }
         wordBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         wordViews.clear()
@@ -475,15 +475,15 @@ class TrechosKeyboardService : InputMethodService() {
     private fun buildQwerty(): View {
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val rows = when (layer) {
-            Layer.LETTERS -> listOf("qwertyuiop", "asdfghjklç", "zxcvbnm")
-            Layer.ACCENTS -> listOf("áàâãéêíóôõ", "úüñ'\"-():;", "!?@/&_")
+            Layer.LETTERS -> listOf("qwertyuiop", "asdfghjkl", "zxcvbnm")
+            Layer.ACCENTS -> listOf("áàâãéêíóôõ", "úüçñ'\"-():", "!?@/&_")
             Layer.SYMBOLS -> listOf("1234567890", "@#$%&-+()/", "*\"':;!?")
         }
         // fileira de números fixa no modo letras, como nos teclados do sistema
         if (layer != Layer.SYMBOLS) {
             val nums = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             for (d in "1234567890") {
-                nums.addView(key(d.toString(), FN_BG, 17f) { typeChar(d.toString()) }, keyParams(1f, 42))
+                nums.addView(key(d.toString(), FN_BG, 17f) { typeChar(d.toString()) }, keyParams(1f, 40))
             }
             col.addView(nums)
         }
@@ -500,11 +500,18 @@ class TrechosKeyboardService : InputMethodService() {
                     }, keyParams(1.5f))
                 }
             }
+            // fileira do meio com 9 teclas, recuada meia tecla de cada lado
+            val inset = chars.length == 9 && idx == 1
+            if (inset) row.addView(View(this), keyParams(0.5f))
             for (ch in chars) {
                 val s = ch.toString()
                 val shown = if (shift != Shift.OFF) s.uppercase() else s
-                row.addView(key(shown, KEY_BG, 22f) { typeChar(s) }, keyParams(1f))
+                val k = key(shown, KEY_BG, 22f) { typeChar(s) }
+                // segurar o c digita ç
+                if (s == "c") k.setOnLongClickListener { tap(it); typeChar("ç"); true }
+                row.addView(k, keyParams(1f))
             }
+            if (inset) row.addView(View(this), keyParams(0.5f))
             if (idx == 2) row.addView(key("⌫", FN_BG, 20f, onClick = null).also { v -> repeating(v) { backspace() } }, keyParams(1.5f))
             col.addView(row)
         }
@@ -522,7 +529,7 @@ class TrechosKeyboardService : InputMethodService() {
         return col
     }
 
-    private fun keyParams(w: Float, heightDp: Int = 54) =
+    private fun keyParams(w: Float, heightDp: Int = 50) =
         LinearLayout.LayoutParams(0, dp(heightDp), w).margins()
 
     // ---------------------------------------------------------------- utilitários de view
@@ -569,7 +576,7 @@ class TrechosKeyboardService : InputMethodService() {
     private fun weight(w: Float) = LinearLayout.LayoutParams(0, dp(52), w).margins()
 
     private fun LinearLayout.LayoutParams.margins(): LinearLayout.LayoutParams = apply {
-        setMargins(dp(2), dp(3), dp(2), dp(3))
+        setMargins(dp(3), dp(4), dp(3), dp(4))
     }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
