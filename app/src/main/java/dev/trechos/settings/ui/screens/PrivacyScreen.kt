@@ -55,7 +55,7 @@ fun PrivacyScreen(state: SettingsState, bottomPadding: Dp, modifier: Modifier = 
             SwitchRow(
                 PhIcons.Regular.Brain, "Aprender com o que eu escrevo",
                 "Palavras, sequências e tokens que você escolhe. Senhas nunca são registradas.",
-                checked = state.learn, onChange = state::setLearn
+                checked = state.learn, onChange = state::updateLearn
             )
             NavigationRow(PhIcons.Regular.Eraser, "Apagar o que o teclado aprendeu", "Volta às sugestões de fábrica.") {
                 confirm = Confirm.LEARNING

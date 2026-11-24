@@ -39,12 +39,12 @@ class SettingsState(private val context: Context) {
     /** Aumenta sempre que a tela volta ao primeiro plano (para reler o status do teclado). */
     var resumeTick by mutableIntStateOf(0)
 
-    fun setHeight(v: Float) { height = v; prefs.edit().putFloat(Prefs.HEIGHT, v).apply() }
-    fun setLayout(v: String) { layout = v; prefs.edit().putString(Prefs.LAYOUT, v).apply() }
-    fun setFloatWidth(v: Float) { floatWidth = v; prefs.edit().putFloat(Prefs.FLOAT_WIDTH, v).apply() }
-    fun setHaptic(v: Boolean) { haptic = v; prefs.edit().putBoolean(Prefs.HAPTIC, v).apply() }
-    fun setPreview(v: Boolean) { preview = v; prefs.edit().putBoolean(Prefs.PREVIEW, v).apply() }
-    fun setLearn(v: Boolean) { learn = v; prefs.edit().putBoolean(Prefs.LEARN, v).apply() }
+    fun updateHeight(v: Float) { height = v; prefs.edit().putFloat(Prefs.HEIGHT, v).apply() }
+    fun updateLayout(v: String) { layout = v; prefs.edit().putString(Prefs.LAYOUT, v).apply() }
+    fun updateFloatWidth(v: Float) { floatWidth = v; prefs.edit().putFloat(Prefs.FLOAT_WIDTH, v).apply() }
+    fun updateHaptic(v: Boolean) { haptic = v; prefs.edit().putBoolean(Prefs.HAPTIC, v).apply() }
+    fun updatePreview(v: Boolean) { preview = v; prefs.edit().putBoolean(Prefs.PREVIEW, v).apply() }
+    fun updateLearn(v: Boolean) { learn = v; prefs.edit().putBoolean(Prefs.LEARN, v).apply() }
 
     /** O teclado está ativado nas configurações do Android? */
     fun isEnabled(): Boolean {

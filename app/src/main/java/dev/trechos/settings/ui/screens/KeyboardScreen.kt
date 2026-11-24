@@ -48,18 +48,18 @@ fun KeyboardScreen(state: SettingsState, bottomPadding: Dp, modifier: Modifier =
                 value = state.height,
                 range = 0.8f..1.3f,
                 valueLabel = "${(state.height * 100).roundToInt()}%",
-                onChange = { state.setHeight((it * 20).roundToInt() / 20f) }   // passos de 5%
+                onChange = { state.updateHeight((it * 20).roundToInt() / 20f) }   // passos de 5%
             )
 
             SectionTitle("Posição")
             OptionRow(PhIcons.Regular.Rows, "Normal", "Ocupa a largura toda da tela.",
-                selected = state.layout == Prefs.LAYOUT_NORMAL) { state.setLayout(Prefs.LAYOUT_NORMAL) }
+                selected = state.layout == Prefs.LAYOUT_NORMAL) { state.updateLayout(Prefs.LAYOUT_NORMAL) }
             OptionRow(PhIcons.Regular.ArrowLineLeft, "Uma mão, à esquerda", "Mais estreito e encostado à esquerda.",
-                selected = state.layout == Prefs.LAYOUT_LEFT) { state.setLayout(Prefs.LAYOUT_LEFT) }
+                selected = state.layout == Prefs.LAYOUT_LEFT) { state.updateLayout(Prefs.LAYOUT_LEFT) }
             OptionRow(PhIcons.Regular.ArrowLineRight, "Uma mão, à direita", "Mais estreito e encostado à direita.",
-                selected = state.layout == Prefs.LAYOUT_RIGHT) { state.setLayout(Prefs.LAYOUT_RIGHT) }
+                selected = state.layout == Prefs.LAYOUT_RIGHT) { state.updateLayout(Prefs.LAYOUT_RIGHT) }
             OptionRow(PhIcons.Regular.FrameCorners, "Flutuante", "Solto na tela: arraste pela alça. Ideal para tablet.",
-                selected = state.layout == Prefs.LAYOUT_FLOATING) { state.setLayout(Prefs.LAYOUT_FLOATING) }
+                selected = state.layout == Prefs.LAYOUT_FLOATING) { state.updateLayout(Prefs.LAYOUT_FLOATING) }
             if (state.layout == Prefs.LAYOUT_FLOATING) {
                 SliderRow(
                     icon = PhIcons.Regular.ArrowsOut,
@@ -67,14 +67,14 @@ fun KeyboardScreen(state: SettingsState, bottomPadding: Dp, modifier: Modifier =
                     value = state.floatWidth,
                     range = 0.45f..1f,
                     valueLabel = "${(state.floatWidth * 100).roundToInt()}%",
-                    onChange = { state.setFloatWidth((it * 20).roundToInt() / 20f) }
+                    onChange = { state.updateFloatWidth((it * 20).roundToInt() / 20f) }
                 )
             }
 
             SectionTitle("Toque")
-            SwitchRow(PhIcons.Regular.Vibrate, "Vibrar ao tocar", checked = state.haptic, onChange = state::setHaptic)
+            SwitchRow(PhIcons.Regular.Vibrate, "Vibrar ao tocar", checked = state.haptic, onChange = state::updateHaptic)
             SwitchRow(PhIcons.Regular.HandTap, "Prévia da tecla", "Mostra a letra grande acima do dedo.",
-                checked = state.preview, onChange = state::setPreview)
+                checked = state.preview, onChange = state::updatePreview)
         }
 
         Spacer(Modifier.height(bottomPadding))
