@@ -100,6 +100,8 @@ class TrechosKeyboardService : InputMethodService() {
     private var page = 0
     private var words: List<String> = emptyList()
     private var letters: List<String> = emptyList()
+    /** token -> como o começo da palavra deve ficar (acento que você não digitou). */
+    private var pieceFixes: Map<String, String> = emptyMap()
     private var numeric = false
     private var phone = false
     private val pieceStack = ArrayDeque<String>()
@@ -529,6 +531,7 @@ class TrechosKeyboardService : InputMethodService() {
                 if (gen != generation) return@post
                 words = ws
                 pieces = pr?.pieces ?: emptyList()
+                pieceFixes = pr?.fixes ?: emptyMap()
                 letters = pr?.letters ?: emptyList()
                 page = 0
                 showWords(ws.map { caseLike(before, it, wholeWord = true) }, clickable = true)
@@ -625,6 +628,25 @@ class TrechosKeyboardService : InputMethodService() {
         fingerY = loc[1] + cell.height / 2f
         val before = textBefore()
         learnChoice(before, s)
+        // palavra acentuada digitada sem acento: corrige o começo junto ("informaca" + "o" -> "informação")
+        val fix = pieceFixes[s.lowercase()]
+        if (fix != null) {
+            var i = before.length
+            while (i > 0 && before[i - 1].isLetter()) i--
+            val typed = before.substring(i)
+            if (typed.isNotEmpty() && Predictor.strip(typed.lowercase()) == Predictor.strip(fix)) {
+                val fixed = when {
+                    typed.length >= 2 && typed.all { it.isUpperCase() } -> fix.uppercase()
+                    typed[0].isUpperCase() -> fix.replaceFirstChar { it.uppercaseChar() }
+                    else -> fix
+                }
+                val ic = currentInputConnection
+                ic?.beginBatchEdit()
+                ic?.deleteSurroundingText(typed.length, 0)
+                ic?.commitText(fixed, 1)
+                ic?.endBatchEdit()
+            }
+        }
         pieceStack.addLast(s)
         commit(s)
         lastAutoSpace = s.endsWith(" ")

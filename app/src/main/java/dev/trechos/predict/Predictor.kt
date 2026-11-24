@@ -168,7 +168,12 @@ class Predictor(val language: String = "pt") {
         return Context(history.lastOrNull() ?: START, prefix, history, cache)
     }
 
-    data class Prediction(val pieces: List<String>, val letters: List<String>)
+    /**
+     * [fixes]: para tokens que vêm de uma palavra acentuada que você digitou sem acento,
+     * como o começo já digitado deve ficar ("informaca" -> "informaçã"). Ao escolher o token,
+     * o teclado corrige o começo e acrescenta o token.
+     */
+    data class Prediction(val pieces: List<String>, val letters: List<String>, val fixes: Map<String, String> = emptyMap())
 
     /**
      * Trechos para a grade (2+ caracteres; os que fecham palavra terminam em espaço)
@@ -192,7 +197,7 @@ class Predictor(val language: String = "pt") {
             val general = base?.let { (it.next[l[0]] ?: 0f) / it.total } ?: 0f
             l to (p - 0.8f * minOf(covered, p) + 1e-4f * general)
         }.sortedByDescending { it.second }.map { it.first }
-        return Prediction(pieces, letters)
+        return Prediction(pieces, letters, pieces.mapNotNull { pc -> fixes[pc]?.let { pc to it } }.toMap())
     }
 
     /**
@@ -212,9 +217,13 @@ class Predictor(val language: String = "pt") {
     /** Até [n] trechos prováveis para continuar o texto (em minúsculas). */
     fun pieces(textBefore: String, n: Int = 18): List<String> = rank(mixedDistribution(textBefore), n)
 
+    // correções de acento da última previsão (só usado na fila de segundo plano)
+    private val fixes = HashMap<String, String>()
+
     private fun mixedDistribution(textBefore: String): Map<String, Float> {
         val ctx = parse(textBefore)
-        val pw = wordPieceDistribution(ctx)
+        fixes.clear()
+        val pw = wordPieceDistribution(ctx, recordFixes = true)
         val pc = charPieceDistribution(normalize(textBefore).takeLast(maxCtx))
 
         val alpha = if (pw.isEmpty()) 0f else 0.8f
@@ -415,47 +424,53 @@ class Predictor(val language: String = "pt") {
         return out
     }
 
-    private fun wordPieceDistribution(ctx: Context): Map<String, Float> {
-        val words = wordCandidates(ctx, accentInsensitive = false)
+    /**
+     * Distribuição dos tokens que continuam a palavra. A busca ignora acentos:
+     * "informaca" também considera "informação". Quando o melhor caminho para um
+     * token passa por uma palavra acentuada diferente do que foi digitado, guarda em
+     * [fixes] como o começo deve ser corrigido.
+     */
+    private fun wordPieceDistribution(ctx: Context, recordFixes: Boolean = false): Map<String, Float> {
+        val words = wordCandidates(ctx, accentInsensitive = true)
         val out = HashMap<String, Float>()
-        for ((w, p) in words) {
-            val rest = w.substring(ctx.prefix.length)
-            for (len in 1..minOf(MAX_PIECE, rest.length)) {
-                val s = rest.substring(0, len)
-                out[s] = (out[s] ?: 0f) + p
-            }
-            // Um final curto de palavra entra inteiro ("aind" -> "ainda").
-            if (rest.length in MAX_PIECE + 1..MAX_WHOLE) out[rest] = (out[rest] ?: 0f) + p
-            // E também com o espaço, como um token que fecha a palavra ("ção ").
-            if (rest.isNotEmpty() && rest.length <= MAX_WHOLE) {
-                val end = "$rest "
-                out[end] = (out[end] ?: 0f) + p
-            }
-            // Palavra longa inteira, só quando o modelo está confiante nela
-            // ("electroma" -> "gnetic␣"... ou de uma vez "gnetism␣" se for quase certo).
-            if (rest.length > MAX_WHOLE && p >= WHOLE_WORD_MIN_P) {
-                val end = "$rest "
-                out[end] = (out[end] ?: 0f) + p
-            }
+        val bestP = HashMap<String, Float>()
+        val bestCanon = HashMap<String, String>()
+        fun add(piece: String, p: Float, canon: String) {
+            out[piece] = (out[piece] ?: 0f) + p
+            if (recordFixes && p > (bestP[piece] ?: 0f)) { bestP[piece] = p; bestCanon[piece] = canon }
         }
-        // O prefixo já é uma palavra completa: o espaço vira um token, sozinho ("␣")
-        // ou já puxando o começo da próxima palavra ("␣de", "␣a").
-        // Uma letra solta só conta como palavra se for comum sozinha ("a", "e", "o", "é"...):
-        // sem isso, digitar "d" fazia a grade oferecer "␣send".
-        val endMass = words[ctx.prefix] ?: 0f
+        for ((w, p) in words) {
+            if (w.length < ctx.prefix.length) continue
+            val canon = w.substring(0, ctx.prefix.length)   // o começo como a palavra escreve
+            val rest = w.substring(ctx.prefix.length)
+            for (len in 1..minOf(MAX_PIECE, rest.length)) add(rest.substring(0, len), p, canon)
+            // Um final curto de palavra entra inteiro ("aind" -> "ainda").
+            if (rest.length in MAX_PIECE + 1..MAX_WHOLE) add(rest, p, canon)
+            // E também com o espaço, como um token que fecha a palavra ("ção ").
+            if (rest.isNotEmpty() && rest.length <= MAX_WHOLE) add("$rest ", p, canon)
+            // Palavra longa inteira, só quando o modelo está confiante nela.
+            if (rest.length > MAX_WHOLE && p >= WHOLE_WORD_MIN_P) add("$rest ", p, canon)
+        }
+        // O prefixo já é uma palavra completa (mesmo sem acento: "nao" = "não"): o espaço vira
+        // um token, sozinho ("␣") ou já puxando o começo da próxima palavra ("␣de", "␣a").
+        // Uma letra solta só conta como palavra se for comum sozinha ("a", "e", "o", "é"...).
+        val strippedPrefix = strip(ctx.prefix)
+        val whole = words.entries
+            .filter { it.key.length == ctx.prefix.length && strip(it.key) == strippedPrefix }
+            .maxByOrNull { it.value }
+        val endMass = whole?.value ?: 0f
         val canEnd = ctx.prefix.length >= 2 || ctx.prefix in SINGLE_LETTER_WORDS
         if (ctx.prefix.isNotEmpty() && endMass > 0f && canEnd) {
-            out[" "] = (out[" "] ?: 0f) + endMass
+            val canon = whole!!.key
+            add(" ", endMass, canon)
             val next = wordPieceDistribution(
-                Context(ctx.prefix, "", (ctx.history + ctx.prefix).takeLast(UserStore.MAX_ORDER), ctx.cache)
+                Context(canon, "", (ctx.history + canon).takeLast(UserStore.MAX_ORDER), ctx.cache)
             )
                 .filterKeys { it.length >= 2 && !it.startsWith(" ") }
                 .entries.sortedByDescending { it.value }.take(12)
-            for ((piece, q) in next) {
-                val k = " $piece"
-                out[k] = (out[k] ?: 0f) + endMass * q
-            }
+            for ((piece, q) in next) add(" $piece", endMass * q, canon)
         }
+        if (recordFixes) for ((piece, canon) in bestCanon) if (canon != ctx.prefix) fixes[piece] = canon
         return out
     }
 
