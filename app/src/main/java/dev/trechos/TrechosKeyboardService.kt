@@ -83,8 +83,9 @@ class TrechosKeyboardService : InputMethodService() {
     // "token embaixo do dedo": último ponto tocado (tela) e quando a grade apareceu
     private var fingerX = -1f
     private var fingerY = -1f
-    private var gridShownAt = 0L
-    private var flashAnchor = false
+    /** Híbrido: palavra com letras suficientes; o próximo toque numa letra faz a grade nascer sob o dedo. */
+    private var gridArmed = false
+    private var armedCell: KeyView? = null
     private var hybridLetters = 4
     private var hybridGridView: View? = null
     private var forceLetters = false
@@ -520,7 +521,7 @@ class TrechosKeyboardService : InputMethodService() {
         updateBar()
         if (numeric) { showWords(emptyList(), clickable = false); return }
         updateHybrid(before)
-        val wantGrid = gridShown
+        val wantGrid = gridShown || (mode == Mode.HIBRIDO && gridArmed)
         // relê o documento de vez em quando (o texto muda enquanto você escreve)
         if (refreshCount++ % 60 == 0) scanDocument()
         bg {
@@ -536,10 +537,7 @@ class TrechosKeyboardService : InputMethodService() {
                 page = 0
                 showWords(ws.map { caseLike(before, it, wholeWord = true) }, clickable = true)
                 showPieces(pieces)
-                if (flashAnchor && gridShown && pieces.isNotEmpty()) {
-                    flashAnchor = false
-                    cellViews.getOrNull(cellOrder()[0])?.let { c -> pop(c, c.width / 2f, c.height / 2f, from = 0.88f, duration = 160) }
-                }
+
             }
         }
     }
@@ -620,7 +618,6 @@ class TrechosKeyboardService : InputMethodService() {
     private fun pickPiece(cell: View) {
         val s = cell.tag as? String ?: return
         // um toque nos primeiros instantes depois da troca para a grade era para uma letra: ignora
-        if (mode == Mode.HIBRIDO && android.os.SystemClock.uptimeMillis() - gridShownAt < GRID_GRACE_MS) return
         // o próximo token mais provável vai aparecer exatamente aqui
         val loc = IntArray(2)
         cell.getLocationOnScreen(loc)
@@ -788,14 +785,77 @@ class TrechosKeyboardService : InputMethodService() {
         if (typed == 0) forceLetters = false
         // a grade só entra depois das primeiras letras (menos troca de teclado, menos cansaço)
         val want = typed >= hybridLetters && !forceLetters
-        if (want == hybridGrid) return
-        hybridGrid = want
-        hideOverlay()
-        showHybrid()
+        if (!want) {
+            // palavra terminou (ou letra avulsa): QWERTY normal
+            setArmed(false)
+            if (hybridGrid) { hybridGrid = false; hideOverlay(); showHybrid() }
+            return
+        }
+        // letras suficientes: o QWERTY continua; o próximo toque numa letra faz a grade nascer
+        if (!hybridGrid) setArmed(true)
+    }
+
+    private fun setArmed(on: Boolean) {
+        if (gridArmed == on) return
+        gridArmed = on
+        // aviso discreto: as letras ficam azuladas quando o próximo toque vira token
+        for ((k, _) in letterKeys) { k.bg = if (on) ARMED_BG else KEY_BG; k.invalidate() }
+    }
+
+    /** A tecla de letra (do QWERTY do híbrido) sob este ponto da tela, se houver. */
+    private fun letterKeyAt(rawX: Float, rawY: Float): KeyView? {
+        val loc = IntArray(2)
+        for ((k, _) in letterKeys) {
+            k.getLocationOnScreen(loc)
+            if (rawX >= loc[0] && rawX < loc[0] + k.width && rawY >= loc[1] && rawY < loc[1] + k.height) return k
+        }
+        return null
+    }
+
+    /** A célula da grade sob este ponto (ou a mais próxima). */
+    private fun cellAt(rawX: Float, rawY: Float): KeyView? {
+        val loc = IntArray(2)
+        return cellViews.minByOrNull { c ->
+            c.getLocationOnScreen(loc)
+            val dx = loc[0] + c.width / 2f - rawX
+            val dy = loc[1] + c.height / 2f - rawY
+            dx * dx + dy * dy
+        }
+    }
+
+    /**
+     * "Grade nasce no toque": desceu o dedo numa letra com o QWERTY armado ->
+     * a grade aparece com o token mais provável exatamente sob o dedo; deslizar troca
+     * de célula; soltar escreve o token.
+     */
+    private fun onArmedTouch(ev: MotionEvent) {
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                fingerX = ev.rawX; fingerY = ev.rawY
+                setArmed(false)
+                hybridGrid = true
+                hideOverlay()
+                showHybrid(keepPieces = true)
+                armedCell = cellAt(ev.rawX, ev.rawY)?.also { it.isPressed = true; tap(it) }
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val c = cellAt(ev.rawX, ev.rawY)
+                if (c !== armedCell) {
+                    armedCell?.isPressed = false
+                    c?.isPressed = true
+                    armedCell = c
+                }
+            }
+            MotionEvent.ACTION_UP -> {
+                armedCell?.let { c -> c.isPressed = false; pickPiece(c) }
+                armedCell = null
+            }
+            MotionEvent.ACTION_CANCEL -> { armedCell?.isPressed = false; armedCell = null }
+        }
     }
 
     /** Alterna QWERTY/grade do híbrido sem recriar nada (só visibilidade + fade curto). */
-    private fun showHybrid() {
+    private fun showHybrid(keepPieces: Boolean = false) {
         val q = hybridQwerty
         val g = hybridGridView
         if (q == null || g == null) { buildBody(); return }
@@ -804,9 +864,9 @@ class TrechosKeyboardService : InputMethodService() {
         hide.visibility = View.INVISIBLE
         show.visibility = View.VISIBLE
         animateIn(show, dy = 0f, duration = 90)
-        if (hybridGrid) {
-            gridShownAt = android.os.SystemClock.uptimeMillis()
-            flashAnchor = true
+        if (hybridGrid && keepPieces) {
+            showPieces(pieces)   // tokens já prontos: o mais provável vai para baixo do dedo
+        } else if (hybridGrid) {
             // não mostra tokens da palavra anterior: a previsão nova chega em seguida
             pieces = emptyList()
             letters = emptyList()
@@ -834,6 +894,7 @@ class TrechosKeyboardService : InputMethodService() {
     }
 
     private fun setMode(m: Mode) {
+        gridArmed = false
         hybridGrid = false
         forceLetters = false
         mode = m
@@ -1348,11 +1409,16 @@ class TrechosKeyboardService : InputMethodService() {
         barNormal.visibility = if (numeric || clipOpen) View.GONE else View.VISIBLE
         hybridQwerty = null
         hybridGridView = null
+        gridArmed = false   // teclas novas nascem normais; o refresh arma de novo se for o caso
         when {
             numeric -> body.addView(buildNumpad())      // campo de número: teclado numérico, sem mudar o modo salvo
             mode == Mode.HIBRIDO -> {
                 // os dois teclados ficam montados; a troca a cada palavra só alterna qual aparece
-                val q = buildQwerty()
+                val q = ArmLayout(this).apply {
+                    addView(buildQwerty())
+                    shouldIntercept = { ev -> gridArmed && letterKeyAt(ev.rawX, ev.rawY) != null }
+                    onArmedTouch = { ev -> this@TrechosKeyboardService.onArmedTouch(ev) }
+                }
                 val g = buildGrid()
                 body.addView(q)
                 body.addView(g)
@@ -1773,8 +1839,6 @@ class TrechosKeyboardService : InputMethodService() {
         private const val CHIP_MS = 60_000L
         private const val LANGUAGE_HOLD_MS = 900L
         /** Modo híbrido: quantas letras no QWERTY antes de a grade aparecer. */
-        /** Toques na grade logo depois de ela aparecer são ignorados (eram para uma letra). */
-        private const val GRID_GRACE_MS = 150L
 
         /** Idiomas disponíveis: lista de frequência de cada um e o nome mostrado no espaço. */
         val LANGUAGE_FILES = linkedMapOf("pt" to "words_pt.tsv", "en" to "words_en.tsv", "es" to "words_es.tsv")
@@ -1818,6 +1882,7 @@ class TrechosKeyboardService : InputMethodService() {
         private val CHIP_BG = Color.parseColor("#26324A")
         private val ACCENT_BG = Color.parseColor("#4D86F7")
         private val ACCENT_PRESSED = Color.parseColor("#6C9BFA")
+        private val ARMED_BG = Color.parseColor("#33415A")
         private val ACCENT = Color.parseColor("#7FA8FF")
         private val FG = Color.parseColor("#F2F2F4")
         private val HINT_FG = Color.parseColor("#B8B8BE")
