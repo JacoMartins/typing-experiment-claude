@@ -34,3 +34,13 @@ SOFTWARE.
 As listas `app/src/main/assets/words_*.tsv` foram geradas com o
 [wordfreq](https://github.com/rspeer/wordfreq). Os dados são distribuídos sob a licença
 [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
+
+## Inter
+
+A fonte Inter (`app/src/main/res/font/inter_*.ttf`), de Rasmus Andersson, é distribuída sob a
+[SIL Open Font License 1.1](https://openfontlicense.org).
+
+## Haze e Phosphor para Compose
+
+A tela de configurações usa as bibliotecas [Haze](https://github.com/chrisbanes/haze) (Apache 2.0)
+e `phosphoricon-compose` (ícones Phosphor, MIT), baixadas pelo Gradle.

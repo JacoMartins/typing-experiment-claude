@@ -18,7 +18,7 @@ O modo escolhido fica salvo: se você sair no modo trechos, o teclado volta nele
 1. Baixe o APK no GitHub, em **Actions → Build APK → (última execução) → Artifacts →
    `trechos-debug-apk`**, ou compile com `./gradlew assembleDebug`.
 2. Instale no celular. O Android vai pedir permissão para instalar apps de fontes desconhecidas.
-3. Abra o app **Trechos** e toque em "Ativar o teclado" e depois em "Escolher o Trechos".
+3. Abra o app **Trechos**: a tela inicial guia a ativação. Em **Teclado** você ajusta altura, uma mão e flutuante; em **Privacidade**, o aprendizado e a área de transferência.
 
 ## Como a previsão funciona
 
