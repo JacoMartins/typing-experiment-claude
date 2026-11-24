@@ -1392,8 +1392,10 @@ class TrechosKeyboardService : InputMethodService() {
         fun syncThumb() {
             val content = strip.width.toFloat()
             val view = scroll.width.toFloat()
-            if (content <= 0f || view <= 0f) return
-            val tw = (track.width * (view / content)).coerceIn(dp(16).toFloat(), track.width.toFloat())
+            // escondida (ex.: grade fora da tela no híbrido) a largura é 0: nada a calcular
+            if (content <= 0f || view <= 0f || track.width <= 0) return
+            val trackW = track.width.toFloat()
+            val tw = (trackW * (view / content)).coerceIn(minOf(dp(16).toFloat(), trackW), trackW)
             val lp = thumb.layoutParams
             if (lp.width != tw.toInt()) { lp.width = tw.toInt(); thumb.layoutParams = lp }
             val maxScroll = (content - view).coerceAtLeast(1f)
