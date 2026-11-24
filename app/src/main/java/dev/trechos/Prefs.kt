@@ -14,6 +14,10 @@ object Prefs {
     const val HAPTIC = "vibrar"
     const val PREVIEW = "previa"
 
+    /** Idiomas ativados (ex.: "pt,en") e o idioma em uso agora. */
+    const val LANGUAGES = "idiomas"
+    const val LANGUAGE = "idioma"
+
     /** Altura do teclado: 0.8 a 1.3 (1.0 = padrão). */
     const val HEIGHT = "altura"
 

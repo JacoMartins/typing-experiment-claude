@@ -46,7 +46,15 @@ class TrechosKeyboardService : InputMethodService() {
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
 
-    @Volatile private var predictor: Predictor? = null
+    /** Um modelo por idioma, carregado só quando é usado. A memória pessoal é compartilhada. */
+    private val predictors = java.util.concurrent.ConcurrentHashMap<String, Predictor>()
+    @Volatile private var userStore: UserStore? = null
+
+    /** Idioma ativo (o espaço mostra o nome; segurar o espaço troca). */
+    @Volatile private var language = "pt"
+    private var languages = listOf("pt", "en")
+
+    private val predictor: Predictor? get() = predictors[language]
     private var sqliteStore: SqliteUserStore? = null
     private var loadedVersion = -1L
 
@@ -103,6 +111,7 @@ class TrechosKeyboardService : InputMethodService() {
     private var pageButton: KeyView? = null
     private var shiftView: KeyView? = null
     private val letterKeys = ArrayList<Pair<KeyView, String>>()
+    private val spaceViews = ArrayList<KeyView>()
 
     // popups (prévia da tecla, acentos, menu)
     private var preview: TextView? = null
@@ -136,21 +145,50 @@ class TrechosKeyboardService : InputMethodService() {
         super.onDestroy()
     }
 
+    /** Recomeça do zero (na criação e quando o aprendizado é apagado): reabre a memória e o idioma ativo. */
     private fun loadModel() {
-        val version = prefs.getLong(KEY_RESET, 0L)
-        loadedVersion = version
-        predictor = null
+        loadedVersion = prefs.getLong(KEY_RESET, 0L)
+        predictors.clear()
         bg {
-            val p = Predictor()
-            for ((file, w) in listOf("words_pt.tsv" to 1f, "words_en.tsv" to 0.35f, "words_es.tsv" to 0.35f)) {
-                assets.open(file).bufferedReader().useLines { p.loadWordList(it, w) }
-            }
-            p.learnText(assets.open("frases.txt").bufferedReader().readText(), 1f)
-            p.userStore = openUserStore(p)
+            userStore = openUserStore()
+        }
+        ensureLanguage(language)
+    }
+
+    /** Carrega o modelo do idioma [lang] em segundo plano, se ainda não estiver carregado. */
+    private fun ensureLanguage(lang: String) {
+        if (predictors.containsKey(lang)) { main.post { refresh() }; return }
+        bg {
+            if (predictors.containsKey(lang)) return@bg
+            val p = Predictor(lang)
+            val file = LANGUAGE_FILES[lang] ?: return@bg
+            assets.open(file).bufferedReader().useLines { p.loadWordList(it, 1f) }
+            if (lang == "pt") p.learnText(assets.open("frases.txt").bufferedReader().readText(), 1f)
+            val store = userStore ?: openUserStore().also { userStore = it }
+            p.userStore = store
+            // vocabulário pessoal deste idioma (e, no português, o histórico de antes da separação)
+            for ((w, c) in store.followers(Predictor.vocabKey(lang), 5000)) p.addUserWord(w, c, USER_WEIGHT)
+            if (lang == "pt") for ((w, c) in store.followers("", 5000)) p.addUserWord(w, c, USER_WEIGHT)
             p.warmUp()
-            predictor = p
+            predictors[lang] = p
             main.post { refresh() }
         }
+    }
+
+    /** Troca o idioma ativo (segurar o espaço), mostrando o novo nome na barra de espaço. */
+    private fun switchLanguage() {
+        if (languages.size < 2) return
+        val next = languages[(languages.indexOf(language) + 1).mod(languages.size)]
+        prefs.edit().putString(Prefs.LANGUAGE, next).apply()   // o listener de preferências aplica (setLanguage)
+    }
+
+    private fun setLanguage(lang: String) {
+        language = lang
+        spaceViews.forEach { k ->
+            k.label = LANGUAGE_NAMES[lang] ?: lang
+            pop(k, k.width / 2f, k.height / 2f, from = 0.92f, duration = 160)
+        }
+        ensureLanguage(lang)
     }
 
     private fun historyFile() = File(filesDir, HISTORY)
@@ -174,7 +212,7 @@ class TrechosKeyboardService : InputMethodService() {
      * (arquivo de pares de palavras) e coloca as palavras aprendidas no vocabulário.
      * Se o banco falhar por algum motivo, o teclado segue com uma memória temporária.
      */
-    private fun openUserStore(p: Predictor): UserStore = try {
+    private fun openUserStore(): UserStore = try {
         sqliteStore?.close()
         val store = SqliteUserStore(this)
         sqliteStore = store
@@ -189,7 +227,6 @@ class TrechosKeyboardService : InputMethodService() {
             }
             f.delete()
         }
-        for ((w, c) in store.followers("", 5000)) p.addUserWord(w, c, USER_WEIGHT)
         store
     } catch (_: Exception) {
         MemoryUserStore()
@@ -201,6 +238,10 @@ class TrechosKeyboardService : InputMethodService() {
         floatWidth = prefs.getFloat(Prefs.FLOAT_WIDTH, 0.75f).coerceIn(0.45f, 1f)
         haptic = prefs.getBoolean(Prefs.HAPTIC, true)
         previewOn = prefs.getBoolean(Prefs.PREVIEW, true)
+        languages = (prefs.getString(Prefs.LANGUAGES, "pt,en") ?: "pt,en")
+            .split(',').filter { it in LANGUAGE_FILES }.ifEmpty { listOf("pt") }
+        val saved = prefs.getString(Prefs.LANGUAGE, languages.first()) ?: languages.first()
+        language = if (saved in languages) saved else languages.first()
     }
 
     /** A tela de configurações mudou algo: o teclado se ajusta na hora. */
@@ -211,6 +252,10 @@ class TrechosKeyboardService : InputMethodService() {
                 if (::root.isInitialized) setInputView(onCreateInputView())
             }
             key == Prefs.HAPTIC -> haptic = prefs.getBoolean(Prefs.HAPTIC, true)
+            key == Prefs.LANGUAGES || key == Prefs.LANGUAGE -> {
+                readSettings()
+                setLanguage(language)
+            }
             key == Prefs.RESET -> loadModel()
             key == Prefs.CLIP_RESET -> {
                 clipStore.clearAll()
@@ -1140,6 +1185,7 @@ class TrechosKeyboardService : InputMethodService() {
         cellViews.clear()
         letterViews.clear()
         letterKeys.clear()
+        spaceViews.clear()
         shiftView = null
         pageButton = null
         barNormal.visibility = if (numeric || clipOpen) View.GONE else View.VISIBLE
@@ -1425,19 +1471,28 @@ class TrechosKeyboardService : InputMethodService() {
 
     /** Espaço: toque digita; arrastar para os lados move o cursor (como no Samsung). */
     private fun spaceKey(): KeyView {
-        val k = kv("Português (BR)", KEY_BG, 14f)
+        val k = kv(LANGUAGE_NAMES[language] ?: language, KEY_BG, 14f)
+        spaceViews.add(k)
         var startX = 0f
         var dragging = false
+        var switched = false
         var steps = 0
+        // segurar ~1 s sem arrastar troca o idioma
+        val hold = Runnable {
+            switched = true
+            if (haptic) k.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            switchLanguage()
+        }
         k.setOnTouchListener { v, ev ->
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     v.isPressed = true; tap(v)
-                    startX = ev.rawX; dragging = false; steps = 0
+                    startX = ev.rawX; dragging = false; switched = false; steps = 0
+                    if (languages.size > 1) main.postDelayed(hold, LANGUAGE_HOLD_MS)
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = ev.rawX - startX
-                    if (!dragging && abs(dx) > dp(14)) dragging = true
+                    if (!dragging && !switched && abs(dx) > dp(14)) { dragging = true; main.removeCallbacks(hold) }
                     if (dragging) {
                         val target = (dx / dp(11)).toInt()
                         while (steps < target) { moveCursor(1); steps++ }
@@ -1446,9 +1501,10 @@ class TrechosKeyboardService : InputMethodService() {
                 }
                 MotionEvent.ACTION_UP -> {
                     v.isPressed = false
-                    if (!dragging) space()
+                    main.removeCallbacks(hold)
+                    if (!dragging && !switched) space()
                 }
-                MotionEvent.ACTION_CANCEL -> v.isPressed = false
+                MotionEvent.ACTION_CANCEL -> { v.isPressed = false; main.removeCallbacks(hold) }
             }
             true
         }
@@ -1523,6 +1579,11 @@ class TrechosKeyboardService : InputMethodService() {
         private const val NUM_H = 54
         private const val LONG_PRESS_MS = 350L
         private const val CHIP_MS = 60_000L
+        private const val LANGUAGE_HOLD_MS = 900L
+
+        /** Idiomas disponíveis: lista de frequência de cada um e o nome mostrado no espaço. */
+        val LANGUAGE_FILES = linkedMapOf("pt" to "words_pt.tsv", "en" to "words_en.tsv", "es" to "words_es.tsv")
+        val LANGUAGE_NAMES = mapOf("pt" to "Português (BR)", "en" to "English (US)", "es" to "Español")
 
         /** Letras da faixa rolável da grade (a ordem na tela vem da previsão). */
         private const val ALL_LETTERS = "abcdefghijklmnopqrstuvwxyzçáâãàéêíóôõú"

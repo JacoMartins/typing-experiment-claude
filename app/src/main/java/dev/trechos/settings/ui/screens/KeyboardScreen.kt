@@ -9,7 +9,12 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.Dp
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import dev.trechos.Prefs
+import dev.trechos.TrechosKeyboardService
+import icons.regular.Translate
 import dev.trechos.settings.SettingsState
 import dev.trechos.settings.ui.components.Header
 import dev.trechos.settings.ui.components.KeyboardPreview
@@ -68,6 +73,21 @@ fun KeyboardScreen(state: SettingsState, bottomPadding: Dp, modifier: Modifier =
                     range = 0.45f..1f,
                     valueLabel = "${(state.floatWidth * 100).roundToInt()}%",
                     onChange = { state.updateFloatWidth((it * 20).roundToInt() / 20f) }
+                )
+            }
+
+            SectionTitle("Idiomas")
+            Text(
+                "Cada idioma tem o próprio vocabulário. Segure o espaço por 1 segundo para trocar.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = Spacing.mdLg, vertical = Spacing.xs)
+            )
+            for ((code, name) in TrechosKeyboardService.LANGUAGE_NAMES) {
+                SwitchRow(
+                    PhIcons.Regular.Translate, name,
+                    checked = code in state.languages,
+                    onChange = { state.toggleLanguage(code) }
                 )
             }
 

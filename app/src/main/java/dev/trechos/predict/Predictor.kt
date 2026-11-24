@@ -14,8 +14,11 @@ import java.text.Normalizer
  *
  * Tudo é calculado como probabilidade de PALAVRAS; os trechos (tokens) da grade
  * saem daí, somando a probabilidade das palavras que começam com cada trecho.
+ *
+ * Cada idioma tem o SEU Predictor (vocabulário e modelo de letras separados);
+ * a memória pessoal ([userStore]) é compartilhada entre eles.
  */
-class Predictor {
+class Predictor(val language: String = "pt") {
 
     private class Node {
         var total = 0f
@@ -85,6 +88,8 @@ class Predictor {
         if (word.isEmpty()) return
         addWord(word, weight * WORD_WEIGHT)
         userStore?.learn(ctx.history, word)
+        // vocabulário pessoal POR IDIOMA: na próxima carga, a palavra volta só para este idioma
+        userStore?.learnExact(vocabKey(language), word)
     }
 
     /** Coloca no vocabulário uma palavra da memória pessoal (na carga do teclado). */
@@ -349,8 +354,11 @@ class Predictor {
         }
         // O prefixo já é uma palavra completa: o espaço vira um token, sozinho ("␣")
         // ou já puxando o começo da próxima palavra ("␣de", "␣a").
+        // Uma letra solta só conta como palavra se for comum sozinha ("a", "e", "o", "é"...):
+        // sem isso, digitar "d" fazia a grade oferecer "␣send".
         val endMass = words[ctx.prefix] ?: 0f
-        if (ctx.prefix.isNotEmpty() && endMass > 0f) {
+        val canEnd = ctx.prefix.length >= 2 || ctx.prefix in SINGLE_LETTER_WORDS
+        if (ctx.prefix.isNotEmpty() && endMass > 0f && canEnd) {
             out[" "] = (out[" "] ?: 0f) + endMass
             val next = wordPieceDistribution(
                 Context(ctx.prefix, "", (ctx.history + ctx.prefix).takeLast(UserStore.MAX_ORDER), ctx.cache)
@@ -422,6 +430,11 @@ class Predictor {
 
     companion object {
         const val START = "<s>"
+
+        /** Contexto da memória pessoal que guarda o vocabulário de cada idioma. */
+        fun vocabKey(language: String) = "@$language"
+
+        private val SINGLE_LETTER_WORDS = setOf("a", "e", "o", "é", "à", "i", "y", "u")
         /** Prefixo dos contextos de "token escolhido" na memória pessoal. */
         private const val PIECE_MARK = "§"
         /** Peso de cada nível do backoff: 3 palavras de contexto valem mais que 1. */

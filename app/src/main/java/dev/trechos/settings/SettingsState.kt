@@ -36,6 +36,21 @@ class SettingsState(private val context: Context) {
     var learn by mutableStateOf(prefs.getBoolean(Prefs.LEARN, true))
         private set
 
+    /** Idiomas ativados; segurar o espaço alterna entre eles. */
+    var languages by mutableStateOf(
+        (prefs.getString(Prefs.LANGUAGES, "pt,en") ?: "pt,en").split(',').filter { it.isNotBlank() }
+    )
+        private set
+
+    /** Liga/desliga um idioma (sempre sobra pelo menos um). */
+    fun toggleLanguage(code: String) {
+        val next = if (code in languages) languages - code else languages + code
+        if (next.isEmpty()) return
+        // mantém a ordem fixa da lista de idiomas
+        languages = TrechosKeyboardService.LANGUAGE_FILES.keys.filter { it in next }
+        prefs.edit().putString(Prefs.LANGUAGES, languages.joinToString(",")).apply()
+    }
+
     /** Aumenta sempre que a tela volta ao primeiro plano (para reler o status do teclado). */
     var resumeTick by mutableIntStateOf(0)
 
