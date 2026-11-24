@@ -656,7 +656,7 @@ class TrechosKeyboardService : InputMethodService() {
         item("Área de transferência", R.drawable.ic_clipboard) { openClipboard() }
         if (mode == Mode.TRECHOS) item("Teclado QWERTY", R.drawable.ic_keyboard) { setMode(Mode.QWERTY) }
         else item("Grade de trechos", R.drawable.ic_grid) { setMode(Mode.TRECHOS) }
-        item("Configurações", R.drawable.ic_more) {
+        item("Configurações", R.drawable.ic_settings) {
             startActivity(Intent(this, SetupActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }
         overlay.addView(scrim, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
