@@ -17,6 +17,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextView
 import dev.trechos.predict.Predictor
@@ -66,9 +67,8 @@ class TrechosKeyboardService : InputMethodService() {
     private lateinit var body: FrameLayout
     private val wordViews = ArrayList<TextView>()
     private val cellViews = ArrayList<TextView>()
-    private var miniOverlay: View? = null
-    private val miniKeys = ArrayList<TextView>()
-    private var miniHover: TextView? = null
+    private val overflowViews = ArrayList<TextView>()
+    private var lettersScroll: HorizontalScrollView? = null
     private var pageButton: TextView? = null
 
     // ---------------------------------------------------------------- ciclo de vida
@@ -205,6 +205,15 @@ class TrechosKeyboardService : InputMethodService() {
             cell.tag = shown
             cell.isEnabled = true
         }
+        val rest = ALL_LETTERS.filter { it.toString() !in letters }
+        overflowViews.forEachIndexed { i, tv ->
+            val l = rest.getOrNull(i)?.toString()
+            val shown = l?.let { caseLike(before, it, wholeWord = false) }
+            tv.text = shown ?: ""
+            tv.tag = shown
+            tv.visibility = if (shown == null) View.GONE else View.VISIBLE
+        }
+        lettersScroll?.scrollTo(0, 0)
         letterViews.forEachIndexed { i, tv ->
             val l = letters.getOrNull(i)
             val shown = l?.let { caseLike(before, it, wholeWord = false) }
@@ -264,93 +273,6 @@ class TrechosKeyboardService : InputMethodService() {
         // se o token tem espaço, uma palavra acabou: aprende com ela
         val sp = s.lastIndexOf(' ')
         if (sp >= 0) learnFrom(before + s.substring(0, sp + 1))
-    }
-
-    // ---------------------------------------------------------------- mini QWERTY
-
-    private fun showMini() {
-        if (miniOverlay != null) return
-        val before = textBefore()
-        val panel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(BG)
-            isClickable = true   // não deixa o toque vazar para a grade embaixo
-        }
-        for (chars in MINI_ROWS) {
-            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            for (ch in chars) {
-                val label = ch.toString()
-                val tv = if (label == "✕") {
-                    key(label, FN_BG, 18f) { hideMini() }
-                } else {
-                    key(caseLike(before, label, wholeWord = false), KEY_BG, 20f) { v -> typeMini(v as TextView) }
-                }
-                miniKeys.add(tv)
-                row.addView(tv, LinearLayout.LayoutParams(0, dp(44), 1f).apply { setMargins(dp(2), dp(3), dp(2), dp(3)) })
-            }
-            panel.addView(row)
-        }
-        body.addView(panel, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP))
-        miniOverlay = panel
-    }
-
-    private fun hideMini() {
-        miniOverlay?.let { body.removeView(it) }
-        miniOverlay = null
-        miniKeys.clear()
-        miniHover = null
-    }
-
-    private fun typeMini(v: TextView) {
-        val l = v.text.toString()
-        if (l.isEmpty() || l == "✕") { hideMini(); return }
-        lastAutoSpace = false
-        pieceStack.addLast(l)
-        hideMini()
-        commit(l)
-    }
-
-    private fun miniKeyAt(rawX: Float, rawY: Float): TextView? {
-        val loc = IntArray(2)
-        for (k in miniKeys) {
-            k.getLocationOnScreen(loc)
-            if (rawX >= loc[0] && rawX < loc[0] + k.width && rawY >= loc[1] && rawY < loc[1] + k.height) return k
-        }
-        return null
-    }
-
-    /** Segurar abre o mini QWERTY; deslizar escolhe; soltar digita. Um toque rápido deixa ele aberto. */
-    private fun miniTouch(v: View) {
-        var startX = 0f
-        var startY = 0f
-        var moved = false
-        v.setOnTouchListener { view, ev ->
-            when (ev.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    tap(view); view.isPressed = true
-                    startX = ev.rawX; startY = ev.rawY; moved = false
-                    if (miniOverlay != null) hideMini() else showMini()
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    if (Math.hypot((ev.rawX - startX).toDouble(), (ev.rawY - startY).toDouble()) > dp(14)) moved = true
-                    val k = miniKeyAt(ev.rawX, ev.rawY)
-                    if (k !== miniHover) {
-                        miniHover?.isPressed = false
-                        k?.isPressed = true
-                        if (k != null) tap(k)
-                        miniHover = k
-                    }
-                }
-                MotionEvent.ACTION_UP -> {
-                    view.isPressed = false
-                    val k = miniHover
-                    if (moved) { if (k != null) typeMini(k) else hideMini() }
-                }
-                MotionEvent.ACTION_CANCEL -> { view.isPressed = false; if (moved) hideMini() }
-            }
-            true
-        }
     }
 
     /** Letra da barra de sugestões da grade. */
@@ -466,8 +388,8 @@ class TrechosKeyboardService : InputMethodService() {
     private fun buildBody() {
         if (!::body.isInitialized) return
         body.removeAllViews()
-        miniOverlay = null
-        miniKeys.clear()
+        overflowViews.clear()
+        lettersScroll = null
         cellViews.clear()
         letterViews.clear()
         pageButton = null
@@ -546,17 +468,32 @@ class TrechosKeyboardService : InputMethodService() {
             row.addView(s, LinearLayout.LayoutParams(0, dp(60), 0.8f).margins())
             col.addView(row)
         }
-        // barra de letras sugeridas: saída para quando o trecho certo não aparece
+        // barra de letras: as sugeridas primeiro; deslizando para o lado vem o resto do alfabeto
         val lettersRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        repeat(LETTERS) {
+        val dotsW = dp(58)
+        val cellW = (resources.displayMetrics.widthPixels - dp(10) - dotsW) / LETTERS
+        val strip = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        fun stripKey(): TextView {
             val tv = key("", KEY_BG, 18f) { v -> (v.tag as? String)?.let { typeLetter(it) } }
-            letterViews.add(tv)
-            lettersRow.addView(tv, LinearLayout.LayoutParams(0, dp(44), 1f).margins())
+            strip.addView(tv, LinearLayout.LayoutParams(cellW - dp(6), dp(44)).margins())
+            return tv
         }
-        // última tecla: segura e desliza para escolher no mini QWERTY (como o menu de acentos)
-        val mini = key("⌨", CELL_BG, 20f, onClick = null)
-        miniTouch(mini)
-        lettersRow.addView(mini, LinearLayout.LayoutParams(0, dp(44), 1.2f).margins())
+        repeat(LETTERS) { letterViews.add(stripKey()) }
+        // divisória discreta entre as sugeridas e o resto
+        strip.addView(View(this).apply { setBackgroundColor(PRESSED_BG) },
+            LinearLayout.LayoutParams(dp(2), dp(30)).apply { gravity = Gravity.CENTER_VERTICAL; setMargins(dp(4), 0, dp(4), 0) })
+        repeat(ALL_LETTERS.length) { overflowViews.add(stripKey()) }
+        val scroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(strip)
+        }
+        lettersScroll = scroll
+        lettersRow.addView(scroll, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        // ⋯ pula para o resto das letras (ou volta para as sugeridas)
+        lettersRow.addView(key("⋯", FN_BG, 22f, bold = true) {
+            val target = overflowViews.firstOrNull()?.left?.minus(dp(6)) ?: 0
+            scroll.smoothScrollTo(if (scroll.scrollX < target / 2) target else 0, 0)
+        }, LinearLayout.LayoutParams(dotsW - dp(6), dp(44)).margins())
         col.addView(lettersRow)
         val bottom = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         bottom.addView(key("ABC", FN_BG, 15f) { setMode(Mode.QWERTY) }, weight(1.1f))
@@ -687,7 +624,8 @@ class TrechosKeyboardService : InputMethodService() {
         /** Ordem de preenchimento: o mais provável no centro, depois as bordas, depois os cantos. */
         private const val LETTERS = 7
 
-        private val MINI_ROWS = listOf("qwertyuiop", "asdfghjkl", "zxcvbnmç✕", "áâãàéêíóôõú")
+        /** Letras do "resto" da faixa, depois das sugeridas. */
+        private const val ALL_LETTERS = "abcdefghijklmnopqrstuvwxyzçáâãàéêíóôõú"
 
         private val GRID_ORDER = intArrayOf(4, 1, 7, 3, 5, 0, 2, 6, 8)
 
