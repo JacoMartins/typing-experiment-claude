@@ -17,7 +17,7 @@ class GestureLayer(context: Context) : FrameLayout(context) {
     var onGestureStart: (List<FloatArray>) -> Unit = {}
     var onGestureMove: (Float, Float) -> Unit = { _, _ -> }
     var onGestureEnd: () -> Unit = {}
-    var enabled = true
+    var swipeEnabled = true
     var threshold = 40f
 
     private var downX = 0f
@@ -31,7 +31,7 @@ class GestureLayer(context: Context) : FrameLayout(context) {
             MotionEvent.ACTION_DOWN -> {
                 downX = ev.rawX; downY = ev.rawY
                 gesturing = false
-                candidate = enabled && startsOnLetter(ev.rawX, ev.rawY)
+                candidate = swipeEnabled && startsOnLetter(ev.rawX, ev.rawY)
                 early.clear()
                 if (candidate) early.add(floatArrayOf(ev.rawX, ev.rawY))
             }

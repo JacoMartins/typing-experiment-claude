@@ -312,7 +312,7 @@ class TrechosKeyboardService : InputMethodService() {
             key == Prefs.HAPTIC -> haptic = prefs.getBoolean(Prefs.HAPTIC, true)
             key == Prefs.HYBRID_LETTERS || key == Prefs.SWIPE || key == Prefs.DWELL_MS -> {
                 readSettings()
-                gestureLayers.forEach { it.enabled = swipeOn }
+                gestureLayers.forEach { it.swipeEnabled = swipeOn }
             }
             key == Prefs.LANGUAGES || key == Prefs.LANGUAGE -> {
                 readSettings()
@@ -862,7 +862,7 @@ class TrechosKeyboardService : InputMethodService() {
 
     private fun wrapGesture(qwerty: View): View = GestureLayer(this).apply {
         addView(qwerty)
-        enabled = swipeOn
+        swipeEnabled = swipeOn
         threshold = dp(26).toFloat()
         startsOnLetter = { x, y -> layer == Layer.LETTERS && letterKeyAt(x, y) != null }
         onGestureStart = { pts -> gestureStart(pts) }
