@@ -607,6 +607,7 @@ class TrechosKeyboardService : InputMethodService() {
         layer = Layer.LETTERS
         hideOverlay()
         buildBody()
+        body.getChildAt(0)?.let { animateIn(it, dy = dp(14).toFloat(), duration = 180) }
         refresh()
     }
 
@@ -770,18 +771,21 @@ class TrechosKeyboardService : InputMethodService() {
         clipOpen = true
         barNormal.visibility = View.GONE
         barClip.visibility = View.VISIBLE
-        showClipPanel()
+        animateIn(barClip, dy = 0f, duration = 160)
+        showClipPanel(animated = true)
     }
 
     private fun closeClipboard() {
         clipOpen = false
         barClip.visibility = View.GONE
         barNormal.visibility = View.VISIBLE
+        animateIn(barNormal, dy = 0f, duration = 160)
         buildBody()
+        body.getChildAt(0)?.let { animateIn(it, dy = dp(16).toFloat(), duration = 180) }
         refresh()
     }
 
-    private fun showClipPanel() {
+    private fun showClipPanel(animated: Boolean = false) {
         if (!clipOpen) return
         clipStore.prune()
         // mantém a altura do teclado para nada pular na tela
@@ -813,6 +817,13 @@ class TrechosKeyboardService : InputMethodService() {
         }
         val scroll = ScrollView(this).apply { isVerticalScrollBarEnabled = false; addView(list) }
         body.addView(scroll, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, h))
+        if (animated) {
+            animateIn(scroll, dy = dp(24).toFloat(), duration = 220)
+            // cartões aparecem em cascata (só os primeiros, os de baixo já estão fora da tela)
+            for (i in 0 until minOf(list.childCount, 6)) {
+                animateIn(list.getChildAt(i), dy = dp(10).toFloat(), duration = 200, delay = 40L * i)
+            }
+        }
     }
 
     private fun clipCard(item: ClipStore.Item): TextView = TextView(this).apply {
@@ -845,7 +856,12 @@ class TrechosKeyboardService : InputMethodService() {
 
     private fun showMenu() {
         hideOverlay()
-        val scrim = View(this).apply { isClickable = true; setOnClickListener { hideOverlay() } }
+        val scrim = View(this).apply {
+            isClickable = true
+            setBackgroundColor(Color.parseColor("#33000000"))
+            alpha = 0f
+            setOnClickListener { closeMenuAnimated() }
+        }
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = rounded(MENU_BG, dp(16).toFloat())
@@ -863,7 +879,7 @@ class TrechosKeyboardService : InputMethodService() {
                 val ic = getDrawable(iconRes)!!.mutate().apply { setTint(FG); setBounds(0, 0, dp(22), dp(22)) }
                 setCompoundDrawables(ic, null, null, null)
                 background = pressable(0, 0f)
-                setOnClickListener { v -> tap(v); hideOverlay(); action() }
+                setOnClickListener { v -> tap(v); closeMenuAnimated(); action() }
             }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(50)))
         }
         item("Área de transferência", R.drawable.ic_clipboard) { openClipboard() }
@@ -880,6 +896,12 @@ class TrechosKeyboardService : InputMethodService() {
         })
         menuViews = listOf(scrim, panel)
         if (root.floating) root.requestLayout()   // menu aberto: a tela toda passa a captar o toque de fechar
+        scrim.animate().alpha(1f).setDuration(160).start()
+        panel.alpha = 0f
+        panel.translationY = -dp(10).toFloat()
+        panel.scaleY = 0.94f
+        panel.pivotY = 0f
+        panel.animate().alpha(1f).translationY(0f).scaleY(1f).setDuration(180).setInterpolator(decel).start()
     }
 
     // ---------------------------------------------------------------- prévia e popup de acentos
@@ -919,7 +941,9 @@ class TrechosKeyboardService : InputMethodService() {
         tv.text = text
         tv.translationX = (keyLeft + keyW / 2 - w / 2).coerceIn(0, maxOf(0, overlay.width - w)).toFloat()
         tv.translationY = maxOf(0, pos[1] - h + (k.height * 0.2f).toInt()).toFloat()
+        tv.animate().cancel()
         tv.visibility = View.VISIBLE
+        pop(tv, w / 2f, h.toFloat(), from = 0.8f, duration = 70)
     }
 
     private fun hidePreview() {
@@ -977,6 +1001,7 @@ class TrechosKeyboardService : InputMethodService() {
         }
         overlay.addView(panel, FrameLayout.LayoutParams(panelW, panelH).apply { leftMargin = left; topMargin = top })
         accentPanel = panel
+        pop(panel, (pos[0] - left + k.width / 2).toFloat(), panelH.toFloat(), from = 0.9f, duration = 120)
         accentCells = cells
         accentCenters = centers
         accentOptions = shown
@@ -1016,6 +1041,18 @@ class TrechosKeyboardService : InputMethodService() {
         accentOptions = emptyList()
     }
 
+    /** Fecha o menu ⋯ com animação (o painel sobe e some) e só então o remove. */
+    private fun closeMenuAnimated() {
+        val views = menuViews
+        if (views.isEmpty()) return
+        menuViews = emptyList()
+        if (root.floating) root.requestLayout()
+        val (scrim, panel) = views
+        scrim.animate().alpha(0f).setDuration(120).start()
+        panel.animate().alpha(0f).translationY(-dp(8).toFloat()).setDuration(120)
+            .withEndAction { overlay.removeView(scrim); overlay.removeView(panel) }.start()
+    }
+
     private fun hideOverlay() {
         if (!::overlay.isInitialized) return
         hidePreview()
@@ -1025,6 +1062,26 @@ class TrechosKeyboardService : InputMethodService() {
             menuViews = emptyList()
             if (root.floating) root.requestLayout()
         }
+    }
+
+    // ---------------------------------------------------------------- animações
+
+    private val decel = android.view.animation.DecelerateInterpolator(1.6f)
+
+    /** Entra com fade, subindo [dy] px; [delay] permite efeito cascata. */
+    private fun animateIn(v: View, dy: Float = dp(12).toFloat(), duration: Long = 200, delay: Long = 0) {
+        v.alpha = 0f
+        v.translationY = dy
+        v.animate().alpha(1f).translationY(0f).setDuration(duration).setStartDelay(delay)
+            .setInterpolator(decel).start()
+    }
+
+    /** "Pop": cresce a partir de [pivotX],[pivotY] (em px dentro da View). */
+    private fun pop(v: View, pivotX: Float, pivotY: Float, from: Float = 0.85f, duration: Long = 110) {
+        v.pivotX = pivotX
+        v.pivotY = pivotY
+        v.scaleX = from; v.scaleY = from; v.alpha = 0f
+        v.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(duration).setInterpolator(decel).start()
     }
 
     // ---------------------------------------------------------------- layout

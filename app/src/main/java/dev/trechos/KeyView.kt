@@ -1,5 +1,7 @@
 package dev.trechos
 
+import android.animation.ArgbEvaluator
+import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
@@ -7,6 +9,7 @@ import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.view.View
+import android.view.animation.DecelerateInterpolator
 
 /**
  * Tecla desenhada à mão: fundo arredondado, rótulo central (ou ícone)
@@ -47,13 +50,36 @@ class KeyView(context: Context) : View(context) {
     private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.RIGHT }
     private val rect = RectF()
 
+    // animação de toque: 0 = solta, 1 = pressionada
+    private var press = 0f
+    private var pressTarget = 0f
+    private var pressAnim: ValueAnimator? = null
+
     init {
         isClickable = true
     }
 
+    /**
+     * Ao pressionar, a tecla "afunda": encolhe um pouco e clareia (rápido, 60ms).
+     * Ao soltar, volta devagar (160ms), o que dá a sensação de mola.
+     */
     override fun drawableStateChanged() {
         super.drawableStateChanged()
-        invalidate()
+        val target = if (isPressed) 1f else 0f
+        if (target == pressTarget) return
+        pressTarget = target
+        pressAnim?.cancel()
+        pressAnim = ValueAnimator.ofFloat(press, target).apply {
+            duration = if (target > press) 60L else 160L
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { press = it.animatedValue as Float; invalidate() }
+            start()
+        }
+    }
+
+    override fun onDetachedFromWindow() {
+        pressAnim?.cancel()
+        super.onDetachedFromWindow()
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -67,7 +93,10 @@ class KeyView(context: Context) : View(context) {
         val cy = rect.centerY()
         val w = rect.width()
         val h = rect.height()
-        bgPaint.color = if (isPressed && pressedBg != 0) pressedBg else bg
+        bgPaint.color = if (pressedBg != 0 && press > 0f) EVAL.evaluate(press, bg, pressedBg) as Int else bg
+        val scale = 1f - 0.05f * press
+        canvas.save()
+        canvas.scale(scale, scale, cx, cy)
         if (bgPaint.color != 0) canvas.drawRoundRect(rect, radiusPx, radiusPx, bgPaint)
 
         val ic = icon
@@ -98,5 +127,10 @@ class KeyView(context: Context) : View(context) {
             val pad = h * 0.11f
             canvas.drawText(hn, rect.right - pad, rect.top + pad + hintPaint.textSize * 0.8f, hintPaint)
         }
+        canvas.restore()
+    }
+
+    private companion object {
+        val EVAL = ArgbEvaluator()
     }
 }
