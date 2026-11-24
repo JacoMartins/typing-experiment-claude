@@ -18,6 +18,9 @@ object Prefs {
     const val LANGUAGES = "idiomas"
     const val LANGUAGE = "idioma"
 
+    /** Modo híbrido: quantas letras no QWERTY antes de a grade aparecer (2 a 5). */
+    const val HYBRID_LETTERS = "hibrido_letras"
+
     /** Altura do teclado: 0.8 a 1.3 (1.0 = padrão). */
     const val HEIGHT = "altura"
 

@@ -79,6 +79,13 @@ class TrechosKeyboardService : InputMethodService() {
     // modo híbrido: a grade está à mostra agora? / o usuário pediu uma letra avulsa (tecla abc)?
     private var hybridGrid = false
     private var hybridQwerty: View? = null
+
+    // "token embaixo do dedo": último ponto tocado (tela) e quando a grade apareceu
+    private var fingerX = -1f
+    private var fingerY = -1f
+    private var gridShownAt = 0L
+    private var flashAnchor = false
+    private var hybridLetters = 4
     private var hybridGridView: View? = null
     private var forceLetters = false
 
@@ -253,6 +260,7 @@ class TrechosKeyboardService : InputMethodService() {
         floatWidth = prefs.getFloat(Prefs.FLOAT_WIDTH, 0.75f).coerceIn(0.45f, 1f)
         haptic = prefs.getBoolean(Prefs.HAPTIC, true)
         previewOn = prefs.getBoolean(Prefs.PREVIEW, true)
+        hybridLetters = prefs.getInt(Prefs.HYBRID_LETTERS, 4).coerceIn(2, 5)
         languages = (prefs.getString(Prefs.LANGUAGES, "pt,en") ?: "pt,en")
             .split(',').filter { it in LANGUAGE_FILES }.ifEmpty { listOf("pt") }
         val saved = prefs.getString(Prefs.LANGUAGE, languages.first()) ?: languages.first()
@@ -267,6 +275,7 @@ class TrechosKeyboardService : InputMethodService() {
                 if (::root.isInitialized) setInputView(onCreateInputView())
             }
             key == Prefs.HAPTIC -> haptic = prefs.getBoolean(Prefs.HAPTIC, true)
+            key == Prefs.HYBRID_LETTERS -> readSettings()
             key == Prefs.LANGUAGES || key == Prefs.LANGUAGE -> {
                 readSettings()
                 setLanguage(language)
@@ -524,6 +533,10 @@ class TrechosKeyboardService : InputMethodService() {
                 page = 0
                 showWords(ws.map { caseLike(before, it, wholeWord = true) }, clickable = true)
                 showPieces(pieces)
+                if (flashAnchor && gridShown && pieces.isNotEmpty()) {
+                    flashAnchor = false
+                    cellViews.getOrNull(cellOrder()[0])?.let { c -> pop(c, c.width / 2f, c.height / 2f, from = 0.88f, duration = 160) }
+                }
             }
         }
     }
@@ -540,8 +553,9 @@ class TrechosKeyboardService : InputMethodService() {
         val before = textBefore()
         val pageItems = list.drop(page * 9).take(9)
         cellViews.forEach { it.label = ""; it.isEnabled = false; it.tag = null }
+        val order = cellOrder()
         pageItems.forEachIndexed { rank, s ->
-            val cell = cellViews.getOrNull(GRID_ORDER[rank]) ?: return@forEachIndexed
+            val cell = cellViews.getOrNull(order[rank]) ?: return@forEachIndexed
             val shown = caseLike(before, s, wholeWord = false)
             // o espaço no fim do token aparece como ␣
             cell.label = shown.replace(' ', '␣')
@@ -602,6 +616,13 @@ class TrechosKeyboardService : InputMethodService() {
 
     private fun pickPiece(cell: View) {
         val s = cell.tag as? String ?: return
+        // um toque nos primeiros instantes depois da troca para a grade era para uma letra: ignora
+        if (mode == Mode.HIBRIDO && android.os.SystemClock.uptimeMillis() - gridShownAt < GRID_GRACE_MS) return
+        // o próximo token mais provável vai aparecer exatamente aqui
+        val loc = IntArray(2)
+        cell.getLocationOnScreen(loc)
+        fingerX = loc[0] + cell.width / 2f
+        fingerY = loc[1] + cell.height / 2f
         val before = textBefore()
         learnChoice(before, s)
         pieceStack.addLast(s)
@@ -614,6 +635,7 @@ class TrechosKeyboardService : InputMethodService() {
 
     /** Letra da barra de sugestões da grade. */
     private fun typeLetter(l: String) {
+        fingerX = -1f   // veio da faixa de letras: volta à ordem padrão da grade
         learnChoice(textBefore(), l)
         lastAutoSpace = false
         pieceStack.addLast(l)
@@ -743,7 +765,7 @@ class TrechosKeyboardService : InputMethodService() {
         val typed = before.length - i
         if (typed == 0) forceLetters = false
         // a grade só entra depois das primeiras letras (menos troca de teclado, menos cansaço)
-        val want = typed >= HYBRID_LETTERS && !forceLetters
+        val want = typed >= hybridLetters && !forceLetters
         if (want == hybridGrid) return
         hybridGrid = want
         hideOverlay()
@@ -757,15 +779,36 @@ class TrechosKeyboardService : InputMethodService() {
         if (q == null || g == null) { buildBody(); return }
         val (show, hide) = if (hybridGrid) g to q else q to g
         hide.animate().cancel()
-        hide.visibility = View.GONE
+        hide.visibility = View.INVISIBLE
         show.visibility = View.VISIBLE
         animateIn(show, dy = 0f, duration = 90)
         if (hybridGrid) {
+            gridShownAt = android.os.SystemClock.uptimeMillis()
+            flashAnchor = true
             // não mostra tokens da palavra anterior: a previsão nova chega em seguida
             pieces = emptyList()
             letters = emptyList()
             showPieces(pieces)
         }
+    }
+
+    /**
+     * Em que células vão os tokens, do mais provável ao menos.
+     * Modo grade: centro, bordas, cantos (posições estáveis).
+     * Híbrido: o mais provável fica na célula mais perto do dedo, e os seguintes ao redor,
+     * para confirmar sem mover a mão (Lei de Fitts).
+     */
+    private fun cellOrder(): IntArray {
+        if (mode != Mode.HIBRIDO || fingerX < 0f || cellViews.size < 9) return GRID_ORDER
+        val loc = IntArray(2)
+        val dist = cellViews.mapIndexed { i, c ->
+            c.getLocationOnScreen(loc)
+            if (c.width == 0) return GRID_ORDER   // ainda sem layout
+            val dx = loc[0] + c.width / 2f - fingerX
+            val dy = loc[1] + c.height / 2f - fingerY
+            i to (dx * dx + dy * dy)
+        }
+        return dist.sortedBy { it.second }.map { it.first }.toIntArray()
     }
 
     private fun setMode(m: Mode) {
@@ -1293,8 +1336,8 @@ class TrechosKeyboardService : InputMethodService() {
                 body.addView(g)
                 hybridQwerty = q
                 hybridGridView = g
-                q.visibility = if (hybridGrid) View.GONE else View.VISIBLE
-                g.visibility = if (hybridGrid) View.VISIBLE else View.GONE
+                q.visibility = if (hybridGrid) View.INVISIBLE else View.VISIBLE
+                g.visibility = if (hybridGrid) View.VISIBLE else View.INVISIBLE
             }
             gridShown -> body.addView(buildGrid())
             else -> body.addView(buildQwerty())
@@ -1552,6 +1595,7 @@ class TrechosKeyboardService : InputMethodService() {
                 MotionEvent.ACTION_DOWN -> {
                     v.isPressed = true
                     tap(v)
+                    fingerX = ev.rawX; fingerY = ev.rawY
                     showPreview(k, shown())
                     if (options.isNotEmpty()) main.postDelayed(longPress, LONG_PRESS_MS)
                 }
@@ -1707,7 +1751,8 @@ class TrechosKeyboardService : InputMethodService() {
         private const val CHIP_MS = 60_000L
         private const val LANGUAGE_HOLD_MS = 900L
         /** Modo híbrido: quantas letras no QWERTY antes de a grade aparecer. */
-        private const val HYBRID_LETTERS = 3
+        /** Toques na grade logo depois de ela aparecer são ignorados (eram para uma letra). */
+        private const val GRID_GRACE_MS = 150L
 
         /** Idiomas disponíveis: lista de frequência de cada um e o nome mostrado no espaço. */
         val LANGUAGE_FILES = linkedMapOf("pt" to "words_pt.tsv", "en" to "words_en.tsv", "es" to "words_es.tsv")

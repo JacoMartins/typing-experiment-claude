@@ -36,6 +36,11 @@ class SettingsState(private val context: Context) {
     var learn by mutableStateOf(prefs.getBoolean(Prefs.LEARN, true))
         private set
 
+    var hybridLetters by mutableIntStateOf(prefs.getInt(Prefs.HYBRID_LETTERS, 4))
+        private set
+
+    fun updateHybridLetters(v: Int) { hybridLetters = v; prefs.edit().putInt(Prefs.HYBRID_LETTERS, v).apply() }
+
     /** Idiomas ativados; segurar o espaço alterna entre eles. */
     var languages by mutableStateOf(
         (prefs.getString(Prefs.LANGUAGES, "pt,en") ?: "pt,en").split(',').filter { it.isNotBlank() }

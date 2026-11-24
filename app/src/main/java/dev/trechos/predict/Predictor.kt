@@ -249,12 +249,63 @@ class Predictor(val language: String = "pt") {
         return chosen
     }
 
-    /** Até [n] palavras completas para a palavra atual (ou a próxima). */
+    /**
+     * Até [n] palavras completas para a palavra atual (ou a próxima).
+     * Com 3+ letras digitadas, também considera que você pode ter errado UMA letra
+     * (vizinha no teclado, letra a mais, a menos ou duas invertidas): a palavra
+     * corrigida entra como sugestão, sem nunca corrigir sozinha.
+     */
     fun completions(textBefore: String, n: Int = 3): List<String> {
         val ctx = parse(textBefore)
-        val scored = wordCandidates(ctx, accentInsensitive = true)
+        val exact = wordCandidates(ctx, accentInsensitive = true)
             .filter { it.key != ctx.prefix }
-        return scored.entries.sortedByDescending { it.value }.take(n).map { it.key }
+            .entries.sortedByDescending { it.value }.map { it.key }
+        if (ctx.prefix.length < 3) return exact.take(n)
+
+        val fuzzy = fuzzyCandidates(strip(ctx.prefix)).filter { it !in exact && it != ctx.prefix }
+        if (fuzzy.isEmpty()) return exact.take(n)
+        // uma correção só passa à frente de uma palavra "exata" se for MUITO mais comum que ela
+        fun raw(w: String) = freq[w] ?: 0f
+        val merged = ArrayList<String>(n)
+        var ei = 0
+        var fi = 0
+        while (merged.size < n && (ei < exact.size || fi < fuzzy.size)) {
+            val e = exact.getOrNull(ei)
+            val f = fuzzy.getOrNull(fi)
+            val takeFuzzy = e == null || (f != null && raw(f) * FUZZY_PENALTY > raw(e))
+            if (takeFuzzy && f != null) { merged.add(f); fi++ } else if (e != null) { merged.add(e); ei++ } else break
+        }
+        return merged
+    }
+
+    /** Palavras cujo começo está a 1 erro de digitação de [typed] (sem acento), das mais comuns. */
+    private fun fuzzyCandidates(typed: String): List<String> {
+        rebuildIfDirty()
+        val variants = LinkedHashSet<String>()
+        for (i in typed.indices) {
+            // letra trocada por uma vizinha no teclado
+            NEIGHBORS[typed[i]]?.forEach { c -> variants.add(typed.substring(0, i) + c + typed.substring(i + 1)) }
+            // letra a mais (apaga uma)
+            if (typed.length > 3) variants.add(typed.removeRange(i, i + 1))
+            // duas letras invertidas
+            if (i < typed.length - 1) variants.add(typed.substring(0, i) + typed[i + 1] + typed[i] + typed.substring(i + 2))
+        }
+        // letra faltando (insere uma letra no meio; no fim seria só continuar a palavra)
+        for (i in 1 until typed.length) for (c in 'a'..'z') variants.add(typed.substring(0, i) + c + typed.substring(i))
+        variants.remove(typed)
+
+        val best = HashMap<String, Float>()
+        for (v in variants) {
+            var i = lowerBound(strippedKeys, v)
+            var scanned = 0
+            while (i < strippedKeys.size && strippedKeys[i].startsWith(v) && scanned < FUZZY_SCAN) {
+                val w = byStripped[i]
+                val f = freq[w] ?: 0f
+                if (f > (best[w] ?: 0f)) best[w] = f
+                i++; scanned++
+            }
+        }
+        return best.entries.sortedByDescending { it.value }.take(3).map { it.key }
     }
 
     // ------------------------------------------------------------ internos
@@ -266,7 +317,8 @@ class Predictor(val language: String = "pt") {
         2 -> 2f
         3 -> 2.8f
         4 -> 3.4f
-        else -> 3.8f
+        in 5..7 -> 3.8f
+        else -> 4.6f   // palavra inteira longa: economiza muitos toques
     }
 
     /** Monta os índices de busca já na carga, para a primeira consulta não travar. */
@@ -379,6 +431,12 @@ class Predictor(val language: String = "pt") {
                 val end = "$rest "
                 out[end] = (out[end] ?: 0f) + p
             }
+            // Palavra longa inteira, só quando o modelo está confiante nela
+            // ("electroma" -> "gnetic␣"... ou de uma vez "gnetism␣" se for quase certo).
+            if (rest.length > MAX_WHOLE && p >= WHOLE_WORD_MIN_P) {
+                val end = "$rest "
+                out[end] = (out[end] ?: 0f) + p
+            }
         }
         // O prefixo já é uma palavra completa: o espaço vira um token, sozinho ("␣")
         // ou já puxando o começo da próxima palavra ("␣de", "␣a").
@@ -474,6 +532,26 @@ class Predictor(val language: String = "pt") {
         private const val CACHE_WORDS = 300
         private const val MAX_PIECE = 4
         private const val MAX_WHOLE = 6
+        /** Probabilidade mínima para oferecer uma palavra longa inteira como token. */
+        private const val WHOLE_WORD_MIN_P = 0.3f
+        /** Uma correção precisa ser ~12x mais comum que a palavra exata para vir antes dela. */
+        private const val FUZZY_PENALTY = 0.08f
+        private const val FUZZY_SCAN = 400
+
+        /** Vizinhas de cada letra no QWERTY (erros de digitação mais comuns). */
+        private val NEIGHBORS: Map<Char, String> = run {
+            val rows = listOf("qwertyuiop", "asdfghjkl", "zxcvbnm")
+            val m = HashMap<Char, String>()
+            for ((r, row) in rows.withIndex()) for ((c, ch) in row.withIndex()) {
+                val sb = StringBuilder()
+                row.getOrNull(c - 1)?.let { sb.append(it) }
+                row.getOrNull(c + 1)?.let { sb.append(it) }
+                rows.getOrNull(r - 1)?.let { up -> up.getOrNull(c)?.let { sb.append(it) }; up.getOrNull(c + 1)?.let { sb.append(it) } }
+                rows.getOrNull(r + 1)?.let { dn -> dn.getOrNull(c)?.let { sb.append(it) }; dn.getOrNull(c - 1)?.let { sb.append(it) } }
+                m[ch] = sb.toString()
+            }
+            m
+        }
         private const val BEAM = 40
         private const val TOP_WORDS = 2000
         /** Quanto uma palavra escrita pelo usuário pesa no vocabulário (escala das listas de frequência). */

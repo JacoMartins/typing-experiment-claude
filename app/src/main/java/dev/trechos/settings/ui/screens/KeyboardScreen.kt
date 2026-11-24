@@ -15,6 +15,7 @@ import androidx.compose.material3.Text
 import dev.trechos.Prefs
 import dev.trechos.TrechosKeyboardService
 import icons.regular.Translate
+import icons.regular.Keyboard
 import dev.trechos.settings.SettingsState
 import dev.trechos.settings.ui.components.Header
 import dev.trechos.settings.ui.components.KeyboardPreview
@@ -75,6 +76,16 @@ fun KeyboardScreen(state: SettingsState, bottomPadding: Dp, modifier: Modifier =
                     onChange = { state.updateFloatWidth((it * 20).roundToInt() / 20f) }
                 )
             }
+
+            SectionTitle("Modo híbrido")
+            SliderRow(
+                icon = PhIcons.Regular.Keyboard,
+                title = "Letras antes da grade",
+                value = state.hybridLetters.toFloat(),
+                range = 2f..5f,
+                valueLabel = "${state.hybridLetters}",
+                onChange = { state.updateHybridLetters(it.roundToInt()) }
+            )
 
             SectionTitle("Idiomas")
             Text(
