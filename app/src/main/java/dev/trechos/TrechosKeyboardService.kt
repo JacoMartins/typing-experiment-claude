@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.StateListDrawable
 import android.inputmethodservice.InputMethodService
 import android.os.Handler
 import android.os.Looper
@@ -51,6 +52,10 @@ class TrechosKeyboardService : InputMethodService() {
     private var pieces: List<String> = emptyList()
     private var page = 0
     private var words: List<String> = emptyList()
+    private var letters: List<String> = emptyList()
+    private var numeric = false
+    private var phone = false
+    private val letterViews = ArrayList<TextView>()
     private val pieceStack = ArrayDeque<String>()
     private var lastAutoSpace = false
     private var learningEnabled = true
@@ -127,6 +132,9 @@ class TrechosKeyboardService : InputMethodService() {
             variation != InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD &&
             variation != InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD &&
             (info.inputType and InputType.TYPE_MASK_CLASS) != InputType.TYPE_CLASS_NUMBER
+        val cls = info.inputType and InputType.TYPE_MASK_CLASS
+        phone = cls == InputType.TYPE_CLASS_PHONE
+        numeric = phone || cls == InputType.TYPE_CLASS_NUMBER || cls == InputType.TYPE_CLASS_DATETIME
         layer = Layer.LETTERS
         shift = Shift.OFF
         pieceStack.clear()
@@ -158,16 +166,18 @@ class TrechosKeyboardService : InputMethodService() {
         }
         val before = textBefore()
         val gen = ++generation
+        if (numeric) { showWords(emptyList(), clickable = false); return }
         worker.execute {
             val ws = p.completions(before, 3)
-            val ps = if (mode == Mode.TRECHOS) p.pieces(before, 18) else emptyList()
+            val pr = if (mode == Mode.TRECHOS) p.predict(before, 18, LETTERS) else null
             main.post {
                 if (gen != generation) return@post
                 words = ws
-                pieces = ps
+                pieces = pr?.pieces ?: emptyList()
+                letters = pr?.letters ?: emptyList()
                 page = 0
                 showWords(ws.map { caseLike(before, it, wholeWord = true) }, clickable = true)
-                showPieces(ps)
+                showPieces(pieces)
             }
         }
     }
@@ -187,9 +197,17 @@ class TrechosKeyboardService : InputMethodService() {
         pageItems.forEachIndexed { rank, s ->
             val cell = cellViews.getOrNull(GRID_ORDER[rank]) ?: return@forEachIndexed
             val shown = caseLike(before, s, wholeWord = false)
-            cell.text = shown
+            // o espaço no fim do token aparece como ␣
+            cell.text = if (shown.endsWith(" ")) shown.trimEnd() + "␣" else shown
             cell.tag = shown
             cell.isEnabled = true
+        }
+        letterViews.forEachIndexed { i, tv ->
+            val l = letters.getOrNull(i)
+            val shown = l?.let { caseLike(before, it, wholeWord = false) }
+            tv.text = shown ?: ""
+            tv.tag = shown
+            tv.isEnabled = shown != null
         }
         val pages = maxOf(1, (list.size + 8) / 9)
         pageButton?.text = if (pages > 1) "⟳ ${page + 1}/$pages" else "⟳"
@@ -236,9 +254,18 @@ class TrechosKeyboardService : InputMethodService() {
 
     private fun pickPiece(cell: TextView) {
         val s = cell.tag as? String ?: return
-        lastAutoSpace = false
+        val before = textBefore()
         pieceStack.addLast(s)
         commit(s)
+        lastAutoSpace = s.endsWith(" ")
+        if (lastAutoSpace) learnFrom(before + s)
+    }
+
+    /** Letra da barra de sugestões da grade. */
+    private fun typeLetter(l: String) {
+        lastAutoSpace = false
+        pieceStack.addLast(l)
+        commit(l)
     }
 
     private fun pickWord(i: Int) {
@@ -348,9 +375,54 @@ class TrechosKeyboardService : InputMethodService() {
         if (!::body.isInitialized) return
         body.removeAllViews()
         cellViews.clear()
+        letterViews.clear()
         pageButton = null
-        body.addView(if (mode == Mode.TRECHOS) buildGrid() else buildQwerty())
+        wordBar.visibility = if (numeric) View.GONE else View.VISIBLE
+        body.addView(
+            when {
+                numeric -> buildNumpad()      // campo de número: teclado numérico, sem mudar o modo salvo
+                mode == Mode.TRECHOS -> buildGrid()
+                else -> buildQwerty()
+            }
+        )
         showPieces(pieces)
+    }
+
+    /** Teclado numérico grande, como o dos campos de número do sistema. */
+    private fun buildNumpad(): View {
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val info = currentInputEditorInfo
+        val action = (info?.imeOptions ?: 0) and EditorInfo.IME_MASK_ACTION
+        val enterLabel = when (action) {
+            EditorInfo.IME_ACTION_GO -> "Ir"
+            EditorInfo.IME_ACTION_SEARCH -> "Buscar"
+            EditorInfo.IME_ACTION_SEND -> "Enviar"
+            EditorInfo.IME_ACTION_NEXT -> "Próx."
+            EditorInfo.IME_ACTION_DONE -> "OK"
+            else -> "↵"
+        }
+        val rows = listOf(
+            listOf("1", "2", "3", "⌫"),
+            listOf("4", "5", "6", enterLabel),
+            listOf("7", "8", "9", if (phone) "+" else "."),
+            listOf(if (phone) "*" else "-", "0", if (phone) "#" else " ", if (phone) " " else ","),
+        )
+        for ((r, labels) in rows.withIndex()) {
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            for ((c, label) in labels.withIndex()) {
+                val lp = LinearLayout.LayoutParams(0, dp(58), 1f).margins()
+                val v = when {
+                    label == "⌫" -> key(label, FN_BG, 22f, onClick = null).also { repeating(it) { backspace() } }
+                    r == 1 && c == 3 -> key(label, FN_BG, 18f) { enter() }.also { it.setTextColor(ACCENT) }
+                    label == " " -> key(if (phone) "␣" else "", FN_BG, 20f) { commit(" ") }
+                    c == 3 || (r == 3 && c != 1) -> key(label, FN_BG, 22f) { commit(label) }
+                    else -> key(label, KEY_BG, 26f) { commit(label) }
+                }
+                row.addView(v, lp)
+            }
+            col.addView(row)
+        }
+        return col
     }
 
     private fun buildGrid(): View {
@@ -372,14 +444,22 @@ class TrechosKeyboardService : InputMethodService() {
             for (c in 0 until 3) {
                 val cell = key("", CELL_BG, textSp = 22f, bold = true) { v -> pickPiece(v as TextView) }
                 cellViews.add(cell)
-                row.addView(cell, LinearLayout.LayoutParams(0, dp(62), 1f).margins())
+                row.addView(cell, LinearLayout.LayoutParams(0, dp(60), 1f).margins())
             }
             val (label, setup) = side[r]
             val s = key(label, FN_BG, textSp = 20f, onClick = null)
             setup(s)
-            row.addView(s, LinearLayout.LayoutParams(0, dp(62), 0.8f).margins())
+            row.addView(s, LinearLayout.LayoutParams(0, dp(60), 0.8f).margins())
             col.addView(row)
         }
+        // barra de letras sugeridas: saída para quando o trecho certo não aparece
+        val lettersRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        repeat(LETTERS) {
+            val tv = key("", KEY_BG, 18f) { v -> (v.tag as? String)?.let { typeLetter(it) } }
+            letterViews.add(tv)
+            lettersRow.addView(tv, LinearLayout.LayoutParams(0, dp(44), 1f).margins())
+        }
+        col.addView(lettersRow)
         val bottom = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         bottom.addView(key("ABC", FN_BG, 15f) { setMode(Mode.QWERTY) }, weight(1.1f))
         bottom.addView(key(",", KEY_BG) { punct(",") }, weight(0.7f))
@@ -397,43 +477,51 @@ class TrechosKeyboardService : InputMethodService() {
             Layer.ACCENTS -> listOf("áàâãéêíóôõ", "úüñ'\"-():;", "!?@/&_")
             Layer.SYMBOLS -> listOf("1234567890", "@#$%&-+()/", "*\"':;!?")
         }
+        // fileira de números fixa no modo letras, como nos teclados do sistema
+        if (layer != Layer.SYMBOLS) {
+            val nums = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            for (d in "1234567890") {
+                nums.addView(key(d.toString(), FN_BG, 17f) { typeChar(d.toString()) }, keyParams(1f, 42))
+            }
+            col.addView(nums)
+        }
         for ((idx, chars) in rows.withIndex()) {
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             if (idx == 2) {
                 if (layer == Layer.SYMBOLS) {
-                    row.addView(key("áé", FN_BG, 15f) { layer = Layer.ACCENTS; buildBody() }, weight(1.5f))
+                    row.addView(key("áé", FN_BG, 16f) { layer = Layer.ACCENTS; buildBody() }, keyParams(1.5f))
                 } else {
                     val label = when (shift) { Shift.OFF -> "⇧"; Shift.ONCE -> "⬆"; Shift.LOCK -> "⇪" }
-                    row.addView(key(label, if (shift == Shift.OFF) FN_BG else CELL_BG, 18f) {
+                    row.addView(key(label, if (shift == Shift.OFF) FN_BG else CELL_BG, 20f) {
                         shift = when (shift) { Shift.OFF -> Shift.ONCE; Shift.ONCE -> Shift.LOCK; Shift.LOCK -> Shift.OFF }
                         buildBody(); refresh()
-                    }, weight(1.5f))
+                    }, keyParams(1.5f))
                 }
             }
             for (ch in chars) {
                 val s = ch.toString()
                 val shown = if (shift != Shift.OFF) s.uppercase() else s
-                row.addView(key(shown, KEY_BG, 19f) { typeChar(s) }, weight(1f))
+                row.addView(key(shown, KEY_BG, 22f) { typeChar(s) }, keyParams(1f))
             }
-            if (idx == 2) row.addView(key("⌫", FN_BG, 18f, onClick = null).also { v -> repeating(v) { backspace() } }, weight(1.5f))
+            if (idx == 2) row.addView(key("⌫", FN_BG, 20f, onClick = null).also { v -> repeating(v) { backspace() } }, keyParams(1.5f))
             col.addView(row)
         }
         val bottom = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        bottom.addView(key(if (layer == Layer.LETTERS) "?123" else "ABC", FN_BG, 14f) {
+        bottom.addView(key(if (layer == Layer.LETTERS) "?123" else "ABC", FN_BG, 15f) {
             layer = if (layer == Layer.LETTERS) Layer.SYMBOLS else Layer.LETTERS; buildBody()
-        }, weight(1.2f))
-        bottom.addView(key(if (layer == Layer.ACCENTS) "ABC" else "áé", FN_BG, 15f) {
-            layer = if (layer == Layer.ACCENTS) Layer.LETTERS else Layer.ACCENTS; buildBody()
-        }, weight(1f))
+        }, keyParams(1.3f))
         // tecla que troca para a grade de trechos
-        bottom.addView(key("⊞", CELL_BG, 20f, bold = true) { setMode(Mode.TRECHOS) }, weight(1f))
-        bottom.addView(key(",", KEY_BG) { punct(",") }, weight(0.8f))
-        bottom.addView(key("espaço", KEY_BG, 14f) { space() }, weight(3f))
-        bottom.addView(key(".", KEY_BG) { punct(".") }, weight(0.8f))
-        bottom.addView(key("↵", FN_BG, 18f) { enter() }, weight(1.2f))
+        bottom.addView(key("⊞", CELL_BG, 22f, bold = true) { setMode(Mode.TRECHOS) }, keyParams(1.1f))
+        bottom.addView(key(",", FN_BG, 20f) { punct(",") }, keyParams(0.9f))
+        bottom.addView(key("espaço", KEY_BG, 14f) { space() }, keyParams(3.6f))
+        bottom.addView(key(".", FN_BG, 20f) { punct(".") }, keyParams(0.9f))
+        bottom.addView(key("↵", FN_BG, 20f) { enter() }, keyParams(1.4f))
         col.addView(bottom)
         return col
     }
+
+    private fun keyParams(w: Float, heightDp: Int = 54) =
+        LinearLayout.LayoutParams(0, dp(heightDp), w).margins()
 
     // ---------------------------------------------------------------- utilitários de view
 
@@ -450,10 +538,15 @@ class TrechosKeyboardService : InputMethodService() {
         setTextSize(TypedValue.COMPLEX_UNIT_SP, textSp)
         if (bold) typeface = Typeface.DEFAULT_BOLD
         maxLines = 1
-        background = GradientDrawable().apply { cornerRadius = dp(7).toFloat(); setColor(color) }
+        background = StateListDrawable().apply {
+            addState(intArrayOf(android.R.attr.state_pressed), rounded(PRESSED_BG))
+            addState(intArrayOf(), rounded(color))
+        }
         isClickable = true
         if (onClick != null) setOnClickListener { tap(it); onClick(it) }
     }
+
+    private fun rounded(color: Int) = GradientDrawable().apply { cornerRadius = dp(8).toFloat(); setColor(color) }
 
     /** Segurar repete a ação (usado no apagar). */
     private fun repeating(v: View, action: () -> Unit) {
@@ -487,6 +580,8 @@ class TrechosKeyboardService : InputMethodService() {
         private const val USER_WEIGHT = 3f
 
         /** Ordem de preenchimento: o mais provável no centro, depois as bordas, depois os cantos. */
+        private const val LETTERS = 8
+
         private val GRID_ORDER = intArrayOf(4, 1, 7, 3, 5, 0, 2, 6, 8)
 
         private val BG = Color.parseColor("#17181B")
@@ -495,5 +590,7 @@ class TrechosKeyboardService : InputMethodService() {
         private val CELL_BG = Color.parseColor("#2E4A6E")
         private val BAR_BG = Color.parseColor("#24262B")
         private val FG = Color.parseColor("#F1F2F4")
+        private val PRESSED_BG = Color.parseColor("#5A6070")
+        private val ACCENT = Color.parseColor("#6FA8FF")
     }
 }

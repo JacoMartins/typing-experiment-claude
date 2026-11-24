@@ -108,8 +108,27 @@ class Predictor {
         return Context(t.substring(k, j), prefix)
     }
 
+    data class Prediction(val pieces: List<String>, val letters: List<String>)
+
+    /**
+     * Trechos para a grade (2+ caracteres; os que fecham palavra terminam em espaço)
+     * e as letras soltas mais prováveis, para a barra de letras.
+     */
+    fun predict(textBefore: String, nPieces: Int = 18, nLetters: Int = 8): Prediction {
+        val mixed = mixedDistribution(textBefore)
+        val letters = mixed.entries
+            .filter { it.key.length == 1 }
+            .sortedByDescending { it.value }
+            .take(nLetters)
+            .map { it.key }
+        val multi = mixed.filterKeys { it.length >= 2 }
+        return Prediction(rank(if (multi.isEmpty()) mixed else multi, nPieces), letters)
+    }
+
     /** Até [n] trechos prováveis para continuar o texto (em minúsculas). */
-    fun pieces(textBefore: String, n: Int = 18): List<String> {
+    fun pieces(textBefore: String, n: Int = 18): List<String> = rank(mixedDistribution(textBefore), n)
+
+    private fun mixedDistribution(textBefore: String): Map<String, Float> {
         val ctx = parse(textBefore)
         val pw = wordPieceDistribution(ctx)
         val pc = charPieceDistribution(normalize(textBefore).takeLast(maxCtx))
@@ -118,7 +137,10 @@ class Predictor {
         val mixed = HashMap<String, Float>()
         for ((s, p) in pw) mixed[s] = alpha * p
         for ((s, p) in pc) mixed[s] = (mixed[s] ?: 0f) + (1 - alpha) * p
+        return mixed
+    }
 
+    private fun rank(mixed: Map<String, Float>, n: Int): List<String> {
         val ranked = mixed.entries
             .filter { it.value > 1e-4f }
             .sortedByDescending { it.value * lengthGain(it.key.length) }
@@ -126,7 +148,7 @@ class Predictor {
         val chosen = ArrayList<String>(n)
         for ((s, p) in ranked) {
             // Se um trecho mais longo já escolhido cobre quase toda a massa deste, ele é redundante.
-            val redundant = chosen.any { it.length > s.length && it.startsWith(s) && (mixed[it] ?: 0f) > 0.6f * p }
+            val redundant = chosen.any { it.length > s.length && it.startsWith(s) && (mixed[it] ?: 0f) > 0.55f * p }
             if (redundant) continue
             chosen.add(s)
             if (chosen.size >= n) break
@@ -202,6 +224,11 @@ class Predictor {
             }
             // Um final curto de palavra entra inteiro ("aind" -> "ainda").
             if (rest.length in MAX_PIECE + 1..MAX_WHOLE) out[rest] = (out[rest] ?: 0f) + p
+            // E também com o espaço, como um token que fecha a palavra ("ção ").
+            if (rest.isNotEmpty() && rest.length <= MAX_WHOLE) {
+                val end = "$rest "
+                out[end] = (out[end] ?: 0f) + p
+            }
         }
         return out
     }
