@@ -806,6 +806,8 @@ class TrechosKeyboardService : InputMethodService() {
         val last = pieceStack.removeLastOrNull()
         if (gridShown && last != null && before.endsWith(last)) {
             ic.deleteSurroundingText(last.length, 0)
+            // escolheu e apagou: erro de previsão neste ponto (o contexto é o texto sem o token)
+            rejectPiece(before.dropLast(last.length), last)
         } else {
             pieceStack.clear()
             if (before.isEmpty()) {
@@ -1332,6 +1334,13 @@ class TrechosKeyboardService : InputMethodService() {
         buildBody()
         body.getChildAt(0)?.let { animateIn(it, dy = dp(14).toFloat(), duration = 180) }
         refresh()
+    }
+
+    /** Token escolhido e apagado: o modelo aprende que ali ele foi um erro. */
+    private fun rejectPiece(contextBefore: String, piece: String) {
+        if (!learningEnabled) return
+        val p = predictor ?: return
+        bg { try { p.learnRejection(contextBefore, piece) } catch (_: Exception) {} }
     }
 
     /** Aprende qual token/letra você escolheu neste ponto da palavra (vale para a grade e a faixa). */

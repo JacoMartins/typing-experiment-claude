@@ -212,6 +212,17 @@ class Predictor(val language: String = "pt") {
         userStore?.learnExact(pieceKey(parse(textBefore)), p)
     }
 
+    /**
+     * Aprende com um ERRO: o token foi escolhido e apagado logo em seguida (o "apaga e volta").
+     * Neste mesmo ponto da palavra, ele perde força nas próximas vezes; quanto mais vezes
+     * isso acontecer, mais ele cai.
+     */
+    fun learnRejection(textBefore: String, piece: String) {
+        val p = piece.lowercase()
+        if (p.isEmpty()) return
+        userStore?.learnExact(REJECT_MARK + pieceKey(parse(textBefore)), p)
+    }
+
     /** No começo da palavra, a escolha depende da palavra anterior; no meio, do pedaço já escrito. */
     private fun pieceKey(ctx: Context) =
         if (ctx.prefix.isEmpty()) "$PIECE_MARK${ctx.prev}|" else "$PIECE_MARK|${ctx.prefix}"
@@ -233,14 +244,19 @@ class Predictor(val language: String = "pt") {
         for ((s, p) in pw) mixed[s] = alpha * p
         for ((s, p) in pc) mixed[s] = (mixed[s] ?: 0f) + (1 - alpha) * p
 
-        // tokens que você costuma escolher neste mesmo ponto ganham peso
+        // Escolhas que você fez neste ponto (ganham peso) MENOS as que você apagou logo depois:
+        // uma escolha desfeita não é preferência. O que sobra de rejeição vira penalidade.
+        val rejected = userStore?.followers(REJECT_MARK + pieceKey(ctx), 60).orEmpty()
         val chosen = userStore?.followers(pieceKey(ctx), 60).orEmpty()
+            .mapValues { (s, c) -> c - (rejected[s] ?: 0f) }
+            .filterValues { it > 0f }
         val total = chosen.values.sum()
         if (total > 0f) {
             val beta = total / (total + 2f) * 0.5f
             for (k in mixed.keys.toList()) mixed[k] = (1 - beta) * mixed[k]!!
             for ((s, c) in chosen) mixed[s] = (mixed[s] ?: 0f) + beta * c / total
         }
+        for ((s, c) in rejected) mixed[s]?.let { mixed[s] = it / (1f + REJECT_STRENGTH * c) }
         return mixed
     }
 
@@ -640,6 +656,10 @@ class Predictor(val language: String = "pt") {
         private val SINGLE_LETTER_WORDS = setOf("a", "e", "o", "é", "à", "i", "y", "u")
         /** Prefixo dos contextos de "token escolhido" na memória pessoal. */
         private const val PIECE_MARK = "§"
+        /** Prefixo dos contextos de "token escolhido e apagado" (erro de previsão). */
+        private const val REJECT_MARK = "¬"
+        /** Cada rejeição divide a força do token por (1 + isto). */
+        private const val REJECT_STRENGTH = 1.5f
         /** Peso de cada nível do backoff: 3 palavras de contexto valem mais que 1. */
         private val ORDER_WEIGHT = floatArrayOf(0f, 0.2f, 0.3f, 0.5f)
         private const val CACHE_WEIGHT = 0.07f
