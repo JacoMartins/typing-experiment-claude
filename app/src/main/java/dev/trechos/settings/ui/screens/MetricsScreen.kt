@@ -40,10 +40,10 @@ import icons.regular.Copy
 import icons.regular.Trash
 import java.util.Locale
 
-private val MODE_NAMES = mapOf("QWERTY" to "QWERTY", "TRECHOS" to "Grade", "HIBRIDO" to "Híbrido", "FLUXO" to "Fluxo")
+private val MODE_NAMES = mapOf("QWERTY" to "QWERTY", "TRECHOS" to "Grade", "HIBRIDO" to "Híbrido", "FLUXO" to "Fluxo", "TRACO" to "Traço")
 private val SOURCE_NAMES = mapOf(
     Telemetry.LETTER to "Letras do QWERTY", Telemetry.STRIP to "Faixa de letras", Telemetry.TOKEN to "Tokens da grade",
-    Telemetry.FLOW to "Tokens do Fluxo", Telemetry.WORD to "Palavras da barra", Telemetry.SWIPE to "Swipe de palavras",
+    Telemetry.FLOW to "Tokens do Traço", "fluxo" to "Tokens do Fluxo (antigo)", Telemetry.WORD to "Palavras da barra", Telemetry.SWIPE to "Swipe de palavras",
     Telemetry.ACCENT to "Acentos e símbolos", Telemetry.SPACE to "Espaço", Telemetry.PUNCT to "Pontuação",
     Telemetry.BACKSPACE to "Apagar",
 )

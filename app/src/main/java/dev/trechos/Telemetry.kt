@@ -64,7 +64,7 @@ class Telemetry(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 1) 
         const val LETTER = "letra"          // tecla do QWERTY
         const val STRIP = "faixa"           // faixa de letras sugeridas
         const val TOKEN = "token"           // célula da grade
-        const val FLOW = "fluxo"            // token por permanência (modo Fluxo)
+        const val FLOW = "traco"            // token escolhido no gesto do modo Traço
         const val WORD = "palavra"          // barra de cima
         const val SWIPE = "swipe"           // palavra por gesto
         const val ACCENT = "acento"         // popup de acentos/símbolos

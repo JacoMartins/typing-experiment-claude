@@ -46,7 +46,7 @@ class SettingsState(private val context: Context) {
         private set
     fun updateSwipe(v: Boolean) { swipe = v; prefs.edit().putBoolean(Prefs.SWIPE, v).apply() }
 
-    var dwellMs by mutableIntStateOf(prefs.getInt(Prefs.DWELL_MS, 380))
+    var dwellMs by mutableIntStateOf(prefs.getInt(Prefs.DWELL_MS, 220))
         private set
     fun updateDwellMs(v: Int) { dwellMs = v; prefs.edit().putInt(Prefs.DWELL_MS, v).apply() }
 

@@ -97,10 +97,10 @@ fun KeyboardScreen(state: SettingsState, bottomPadding: Dp, modifier: Modifier =
             )
             SliderRow(
                 icon = PhIcons.Regular.Timer,
-                title = "Permanência no modo Fluxo",
-                value = state.dwellMs.toFloat(),
-                range = 150f..900f,
-                valueLabel = "${state.dwellMs} ms",
+                title = "Pausa que escolhe (modo Traço)",
+                value = state.dwellMs.coerceIn(100, 600).toFloat(),
+                range = 100f..600f,
+                valueLabel = "${state.dwellMs.coerceIn(100, 600)} ms",
                 onChange = { state.updateDwellMs(((it / 10).roundToInt() * 10)) }
             )
 
