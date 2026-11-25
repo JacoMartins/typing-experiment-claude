@@ -1044,6 +1044,7 @@ class TrechosKeyboardService : InputMethodService() {
 
     private fun traceTargetAt(x: Float, y: Float): KeyView? =
         keyUnder(cellViews, x, y)
+            ?: keyUnder(letterViews, x, y)   // letras de cima: dão a direção quando a previsão não acerta
             ?: gridSpaceKey?.let { keyUnder(listOf(it), x, y) }
             ?: gridBackKey?.let { keyUnder(listOf(it), x, y) }
 
@@ -1084,7 +1085,7 @@ class TrechosKeyboardService : InputMethodService() {
             MotionEvent.ACTION_UP -> {
                 // levantar o dedo numa célula escolhe ela
                 val c = traceCell
-                if (c != null && c in cellViews && !traceCommittedHere) traceCommit(c)
+                if (c != null && (c in cellViews || c in letterViews) && !traceCommittedHere) traceCommit(c)
                 traceEnd()
             }
             MotionEvent.ACTION_CANCEL -> traceEnd()
@@ -1113,7 +1114,7 @@ class TrechosKeyboardService : InputMethodService() {
     private fun traceLeave(x: Float, y: Float) {
         val c = traceCell ?: return
         c.isPressed = false
-        if (c !in cellViews || traceCommittedHere) return
+        if ((c !in cellViews && c !in letterViews) || traceCommittedHere) return
         // direção de saída: dos pontos recentes até a borda da célula
         val ref = traceRecent.firstOrNull()
         val outX = if (ref != null) x - ref[0] else 0f
@@ -1127,10 +1128,15 @@ class TrechosKeyboardService : InputMethodService() {
     }
 
     private fun traceCommit(c: KeyView) {
-        if (c.tag == null) return
-        traceCommitting = true
-        pickPiece(c)
-        traceCommitting = false
+        val tag = c.tag as? String ?: return
+        if (c in letterViews) {
+            // letra da faixa: escreve a letra; a grade se refaz a partir dela
+            typeLetter(tag)
+        } else {
+            traceCommitting = true
+            pickPiece(c)
+            traceCommitting = false
+        }
         traceCommittedHere = true
         pop(c, c.width / 2f, c.height / 2f, from = 0.9f, duration = 120)
     }
