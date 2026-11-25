@@ -27,6 +27,9 @@ object Prefs {
     /** Modo Fluxo: tempo parado sobre uma célula para escrever o token (ms). */
     const val DWELL_MS = "fluxo_permanencia"
 
+    /** Sinal da tela de configurações para o teclado zerar as métricas. */
+    const val METRICS_RESET = "metricas_reset"
+
     /** Altura do teclado: 0.8 a 1.3 (1.0 = padrão). */
     const val HEIGHT = "altura"
 

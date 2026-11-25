@@ -11,6 +11,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.trechos.ClipStore
 import dev.trechos.CrashLog
+import dev.trechos.Telemetry
 import dev.trechos.Prefs
 import dev.trechos.SqliteUserStore
 import dev.trechos.TrechosKeyboardService
@@ -113,6 +114,27 @@ class SettingsState(private val context: Context) {
     }
 
     fun dismissCrash() { CrashLog.clear(context); crashReport = null }
+
+    /** Resumo das métricas: período 0 = hoje, 1 = últimos 7 dias, 2 = tudo. */
+    fun metrics(period: Int): List<Telemetry.Row> = try {
+        val cal = java.util.Calendar.getInstance()
+        if (period == 1) cal.add(java.util.Calendar.DAY_OF_YEAR, -6)
+        val since = if (period == 2) "0000-00-00"
+            else java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(cal.time)
+        Telemetry(context).use { it.summary(since) }
+    } catch (_: Exception) { emptyList() }
+
+    fun copyMetricsCsv() {
+        val csv = try { Telemetry(context).use { it.csv() } } catch (_: Exception) { return }
+        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        cm.setPrimaryClip(android.content.ClipData.newPlainText("Métricas do Trechos", csv))
+    }
+
+    /** O teclado mantém o banco aberto: ele mesmo zera ao receber este sinal. */
+    fun clearMetrics() {
+        prefs.edit().putLong(Prefs.METRICS_RESET, System.currentTimeMillis()).apply()
+        try { Telemetry(context).use { it.writableDatabase.delete("ev", null, null) } } catch (_: Exception) {}
+    }
 
     fun clearClipboard() {
         File(context.filesDir, ClipStore.FILE).delete()

@@ -18,6 +18,11 @@ class GestureLayer(context: Context) : FrameLayout(context) {
     var onGestureMove: (Float, Float) -> Unit = { _, _ -> }
     var onGestureEnd: () -> Unit = {}
     var swipeEnabled = true
+    /** Ainda pode virar swipe agora? (ex.: não, se o popup de acentos estiver aberto) */
+    var canStart: () -> Boolean = { true }
+    /** O swipe precisa começar antes disto (ms); segurar parado e depois mover é escolha de acento. */
+    var maxStartMs = 300L
+    private var downTime = 0L
     var threshold = 40f
 
     private var downX = 0f
@@ -30,6 +35,7 @@ class GestureLayer(context: Context) : FrameLayout(context) {
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 downX = ev.rawX; downY = ev.rawY
+                downTime = ev.eventTime
                 gesturing = false
                 candidate = swipeEnabled && startsOnLetter(ev.rawX, ev.rawY)
                 early.clear()
@@ -37,6 +43,7 @@ class GestureLayer(context: Context) : FrameLayout(context) {
             }
             MotionEvent.ACTION_MOVE -> {
                 if (!candidate || ev.pointerCount > 1) return false
+                if (!canStart() || ev.eventTime - downTime > maxStartMs) { candidate = false; return false }
                 early.add(floatArrayOf(ev.rawX, ev.rawY))
                 if (hypot(ev.rawX - downX, ev.rawY - downY) > threshold) {
                     gesturing = true

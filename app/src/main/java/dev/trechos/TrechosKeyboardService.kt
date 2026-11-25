@@ -83,6 +83,24 @@ class TrechosKeyboardService : InputMethodService() {
     // "token embaixo do dedo": último ponto tocado (tela) e quando a grade apareceu
     private var fingerX = -1f
     private var fingerY = -1f
+    // ---- telemetria (só no aparelho; nunca guarda o texto)
+    private var telemetry: Telemetry? = null
+    private var lastEventAt = 0L
+    private var flowCommitting = false
+    private val dayFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+
+    /** Registra uma ação: de onde veio, quantos caracteres e quanto tempo desde a anterior. */
+    private fun track(source: String, chars: Int) {
+        if (isPasswordField() || numeric) return
+        val now = System.currentTimeMillis()
+        val gap = if (lastEventAt == 0L || now - lastEventAt > Telemetry.PAUSE_MS) -1L else now - lastEventAt
+        lastEventAt = now
+        val t = telemetry ?: return
+        val m = mode.name
+        val day = dayFormat.format(java.util.Date(now))
+        bg { t.record(now, day, m, source, chars, gap) }
+    }
+
     // ---- swipe de palavras (QWERTY)
     private var swipeOn = true
     private val gestureLayers = ArrayList<GestureLayer>()
@@ -182,6 +200,7 @@ class TrechosKeyboardService : InputMethodService() {
         super.onCreate()
         CrashLog.install(this)
         prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        telemetry = try { Telemetry(this) } catch (_: Exception) { null }
         val savedMode = prefs.getString(KEY_MODE, Mode.QWERTY.name)
         mode = Mode.values().firstOrNull { it.name == savedMode } ?: Mode.QWERTY
         clipStore = ClipStore(File(filesDir, ClipStore.FILE)).also { it.load() }
@@ -197,6 +216,7 @@ class TrechosKeyboardService : InputMethodService() {
         prefs.unregisterOnSharedPreferenceChangeListener(prefListener)
         worker.shutdownNow()
         sqliteStore?.close()
+        telemetry?.close()
         super.onDestroy()
     }
 
@@ -310,6 +330,11 @@ class TrechosKeyboardService : InputMethodService() {
                 if (::root.isInitialized) setInputView(onCreateInputView())
             }
             key == Prefs.HAPTIC -> haptic = prefs.getBoolean(Prefs.HAPTIC, true)
+            key == Prefs.METRICS_RESET -> {
+                val t = telemetry
+                bg { try { t?.writableDatabase?.delete("ev", null, null) } catch (_: Exception) {} }
+                lastEventAt = 0L
+            }
             key == Prefs.HYBRID_LETTERS || key == Prefs.SWIPE || key == Prefs.DWELL_MS -> {
                 readSettings()
                 gestureLayers.forEach { it.swipeEnabled = swipeOn }
@@ -654,6 +679,7 @@ class TrechosKeyboardService : InputMethodService() {
     }
 
     private fun typeChar(c: String) {
+        track(Telemetry.LETTER, 1)
         forceLetters = false   // híbrido: depois da letra avulsa, a grade volta
         val out = if (shift != Shift.OFF) c.uppercase() else c
         lastAutoSpace = false
@@ -663,6 +689,7 @@ class TrechosKeyboardService : InputMethodService() {
 
     private fun pickPiece(cell: View) {
         val s = cell.tag as? String ?: return
+        track(if (flowCommitting) Telemetry.FLOW else Telemetry.TOKEN, s.length)
         // um toque nos primeiros instantes depois da troca para a grade era para uma letra: ignora
         // o próximo token mais provável vai aparecer exatamente aqui
         val loc = IntArray(2)
@@ -700,6 +727,7 @@ class TrechosKeyboardService : InputMethodService() {
 
     /** Letra da barra de sugestões da grade. */
     private fun typeLetter(l: String) {
+        track(Telemetry.STRIP, 1)
         fingerX = -1f   // veio da faixa de letras: volta à ordem padrão da grade
         learnChoice(textBefore(), l)
         lastAutoSpace = false
@@ -709,6 +737,7 @@ class TrechosKeyboardService : InputMethodService() {
 
     private fun pickWord(i: Int) {
         val w = words.getOrNull(i) ?: return
+        track(Telemetry.WORD, w.length + 1)
         val ic = currentInputConnection ?: return
         // trocar a palavra do último swipe por outra leitura do traço
         if (gestureAlts.isNotEmpty() && lastGesture.isNotEmpty() && textBefore().endsWith(lastGesture)) {
@@ -735,6 +764,7 @@ class TrechosKeyboardService : InputMethodService() {
     }
 
     private fun space() {
+        track(Telemetry.SPACE, 1)
         val before = textBefore()
         commit(" ")
         learnFrom("$before ")
@@ -744,6 +774,7 @@ class TrechosKeyboardService : InputMethodService() {
 
     /** Vírgula, ponto etc.: cola na palavra se o espaço anterior foi automático. */
     private fun punct(c: String) {
+        track(Telemetry.PUNCT, 1)
         val ic = currentInputConnection ?: return
         val before = textBefore()
         ic.beginBatchEdit()
@@ -761,6 +792,7 @@ class TrechosKeyboardService : InputMethodService() {
     }
 
     private fun backspace() {
+        track(Telemetry.BACKSPACE, -1)
         val ic = currentInputConnection ?: return
         lastAutoSpace = false
         val sel = ic.getSelectedText(0)
@@ -865,6 +897,9 @@ class TrechosKeyboardService : InputMethodService() {
         swipeEnabled = swipeOn
         threshold = dp(26).toFloat()
         startsOnLetter = { x, y -> layer == Layer.LETTERS && letterKeyAt(x, y) != null }
+        // segurou a tecla (popup de acentos aberto, ou quase): é escolha de acento, não swipe
+        canStart = { accentPanel == null }
+        maxStartMs = LONG_PRESS_MS - 60
         onGestureStart = { pts -> gestureStart(pts) }
         onGestureMove = { x, y -> gestureMove(x, y) }
         onGestureEnd = { gestureEnd() }
@@ -942,6 +977,7 @@ class TrechosKeyboardService : InputMethodService() {
     }
 
     private fun commitGestureWord(w: String, alts: List<String>) {
+        track(Telemetry.SWIPE, w.length + 1)
         val before = textBefore()
         val sep = if (before.isNotEmpty() && before.last().isLetterOrDigit()) " " else ""
         val shown = caseLike(before + sep, w, wholeWord = true)
@@ -1015,7 +1051,7 @@ class TrechosKeyboardService : InputMethodService() {
         when {
             t === gridBackKey -> { backspace(); flowStart = android.os.SystemClock.uptimeMillis() }
             t === gridSpaceKey -> { space(); flowWaiting = true }
-            t in cellViews -> { pickPiece(t); flowWaiting = true }
+            t in cellViews -> { flowCommitting = true; pickPiece(t); flowCommitting = false; flowWaiting = true }
         }
     }
 
@@ -2027,6 +2063,7 @@ class TrechosKeyboardService : InputMethodService() {
 
     /** Digita exatamente o texto (já com maiúscula aplicada, vindo do popup). */
     private fun typeRaw(s: String) {
+        track(Telemetry.ACCENT, s.length)
         lastAutoSpace = false
         pieceStack.clear()
         commit(s)

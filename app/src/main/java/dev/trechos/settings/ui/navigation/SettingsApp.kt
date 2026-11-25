@@ -42,14 +42,17 @@ import dev.chrisbanes.haze.rememberHazeState
 import dev.trechos.settings.SettingsState
 import dev.trechos.settings.ui.screens.HomeScreen
 import dev.trechos.settings.ui.screens.KeyboardScreen
+import dev.trechos.settings.ui.screens.MetricsScreen
 import dev.trechos.settings.ui.screens.PrivacyScreen
 import dev.trechos.settings.ui.theme.Spacing
 import dev.trechos.settings.ui.theme.modifiers.angularBorder
 import dev.trechos.settings.ui.theme.smoothlyFrosted
 import icons.PhIcons
+import icons.filled.ChartBarFill
 import icons.filled.HouseFill
 import icons.filled.KeyboardFill
 import icons.filled.ShieldCheckFill
+import icons.regular.ChartBar
 import icons.regular.House
 import icons.regular.Keyboard
 import icons.regular.ShieldCheck
@@ -59,6 +62,7 @@ val LocalIsDarkTheme = staticCompositionLocalOf { false }
 enum class SettingsDestinations(val label: String, val icon: ImageVector, val selectedIcon: ImageVector) {
     HOME("Início", PhIcons.Regular.House, PhIcons.Filled.HouseFill),
     KEYBOARD("Teclado", PhIcons.Regular.Keyboard, PhIcons.Filled.KeyboardFill),
+    METRICS("Métricas", PhIcons.Regular.ChartBar, PhIcons.Filled.ChartBarFill),
     PRIVACY("Privacidade", PhIcons.Regular.ShieldCheck, PhIcons.Filled.ShieldCheckFill),
 }
 
@@ -92,6 +96,7 @@ fun SettingsApp(state: SettingsState) {
                 when (current) {
                     SettingsDestinations.HOME -> HomeScreen(state, barSpace, screenModifier)
                     SettingsDestinations.KEYBOARD -> KeyboardScreen(state, barSpace, screenModifier)
+                    SettingsDestinations.METRICS -> MetricsScreen(state, barSpace, screenModifier)
                     SettingsDestinations.PRIVACY -> PrivacyScreen(state, barSpace, screenModifier)
                 }
             }
