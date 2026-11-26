@@ -129,6 +129,10 @@ class TrechosKeyboardService : InputMethodService() {
     private var traceCommittedHere = false
     private var traceCommitting = false
     private var traceTrail: TrailView? = null
+    /** Balão acima do dedo com o token da célula sob ele (o dedo cobre a célula). */
+    private var traceBubble: TextView? = null
+    /** Atualização adiada da célula sob o dedo (ela não muda enquanto o dedo está nela). */
+    private var tracePending: Triple<KeyView, String?, Int>? = null
     private var gridSpaceKey: KeyView? = null
     private var gridBackKey: KeyView? = null
 
@@ -1031,14 +1035,31 @@ class TrechosKeyboardService : InputMethodService() {
         cellViews.forEachIndexed { i, cell ->
             val tok = chosen[i]
             val shown = tok?.let { caseLike(before, it, wholeWord = false) }
-            cell.label = shown?.replace(' ', '␣') ?: ""
-            cell.tag = shown
-            cell.isEnabled = shown != null
-            cell.hint = REGION_LABELS[i]
             // mais provável = mais forte
             val f = 1f - (rankOf[i].coerceAtMost(40) / 40f) * 0.75f
-            cell.bg = android.animation.ArgbEvaluator().evaluate(f, FN_BG, CELL_BG) as Int
-            cell.invalidate()
+            val bg = android.animation.ArgbEvaluator().evaluate(f, FN_BG, CELL_BG) as Int
+            cell.hint = REGION_LABELS[i]
+            if (traceActive && cell === traceCell) {
+                // o dedo está nesta célula: ela só muda quando o dedo sair
+                tracePending = Triple(cell, shown, bg)
+                return@forEachIndexed
+            }
+            applyTraceCell(cell, shown, bg, animate = traceActive)
+        }
+    }
+
+    private fun applyTraceCell(cell: KeyView, shown: String?, bg: Int, animate: Boolean) {
+        val changed = cell.tag != shown
+        cell.label = shown?.replace(' ', '␣') ?: ""
+        cell.tag = shown
+        cell.isEnabled = shown != null
+        cell.bg = bg
+        cell.invalidate()
+        if (animate && changed) {
+            // troca suave, em vez de pular de repente
+            cell.animate().cancel()
+            cell.alpha = 0.3f
+            cell.animate().alpha(1f).setDuration(160).start()
         }
     }
 
@@ -1070,9 +1091,11 @@ class TrechosKeyboardService : InputMethodService() {
                 overlay.addView(tv, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
                 traceTrail = tv
                 traceTrailAdd(x, y)
+                moveTraceBubble(x, y)
             }
             MotionEvent.ACTION_MOVE -> {
                 traceTrailAdd(x, y)
+                moveTraceBubble(x, y)
                 traceRecent.addLast(floatArrayOf(x, y))
                 if (traceRecent.size > 6) traceRecent.removeFirst()
                 val t = traceTargetAt(x, y)
@@ -1094,6 +1117,7 @@ class TrechosKeyboardService : InputMethodService() {
 
     private fun traceEnter(t: KeyView?, x: Float, y: Float, isStart: Boolean) {
         traceCell?.isPressed = false
+        tracePending?.let { (cell, shown, bg) -> if (cell !== t) { applyTraceCell(cell, shown, bg, animate = true); tracePending = null } }
         traceCell = t
         traceIsStart = isStart
         traceEnterAt = android.os.SystemClock.uptimeMillis()
@@ -1139,6 +1163,39 @@ class TrechosKeyboardService : InputMethodService() {
         }
         traceCommittedHere = true
         pop(c, c.width / 2f, c.height / 2f, from = 0.9f, duration = 120)
+        traceBubble?.let { b ->
+            b.text = "✓ " + tag.replace(' ', '␣')
+            b.background = rounded(ACCENT_BG, dp(14).toFloat())
+            pop(b, b.width / 2f, b.height.toFloat(), from = 0.85f, duration = 120)
+        }
+    }
+
+    /**
+     * Balão acima do dedo: mostra o token da célula (ou a letra da faixa) sob o dedo agora.
+     * Fica neutro enquanto você passa; vira azul com ✓ quando a célula é escolhida.
+     */
+    private fun moveTraceBubble(x: Float, y: Float) {
+        val b = traceBubble ?: TextView(this).apply {
+            setTextColor(FG)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 24f)
+            gravity = Gravity.CENTER
+            setPadding(dp(16), 0, dp(16), 0)
+            elevation = dp(6).toFloat()
+            minWidth = dp(64)
+            overlay.addView(this, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, dp(52)))
+        }.also { traceBubble = it }
+        val under = traceCell
+        val label = (under?.tag as? String)?.replace(' ', '␣')
+        if (!traceCommittedHere) {
+            b.text = label ?: ""
+            b.background = rounded(PREVIEW_BG, dp(14).toFloat())
+        }
+        b.visibility = if (b.text.isNullOrEmpty()) View.INVISIBLE else View.VISIBLE
+        val o = IntArray(2)
+        overlay.getLocationOnScreen(o)
+        val w = if (b.width > 0) b.width else dp(80)
+        b.translationX = (x - o[0] - w / 2f).coerceIn(0f, (overlay.width - w).coerceAtLeast(0).toFloat())
+        b.translationY = (y - o[1] - dp(52) - dp(44)).coerceAtLeast(0f)   // acima da ponta do dedo
     }
 
     private fun traceTrailAdd(x: Float, y: Float) {
@@ -1152,6 +1209,10 @@ class TrechosKeyboardService : InputMethodService() {
         traceActive = false
         traceCell?.isPressed = false
         traceCell = null
+        tracePending?.let { (cell, shown, bg) -> applyTraceCell(cell, shown, bg, animate = true) }
+        tracePending = null
+        traceBubble?.let { b -> b.animate().alpha(0f).setDuration(150).withEndAction { overlay.removeView(b) }.start() }
+        traceBubble = null
         traceTrail?.let { t -> t.animate().alpha(0f).setDuration(200).withEndAction { overlay.removeView(t) }.start() }
         traceTrail = null
     }
