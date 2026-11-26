@@ -1182,8 +1182,11 @@ class TrechosKeyboardService : InputMethodService() {
             setPadding(dp(16), 0, dp(16), 0)
             elevation = dp(6).toFloat()
             minWidth = dp(64)
-            overlay.addView(this, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, dp(52)))
-        }.also { traceBubble = it }
+        }.also {
+            // fora do apply: lá dentro, "overlay" seria a camada interna da própria TextView
+            overlay.addView(it, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, dp(52)))
+            traceBubble = it
+        }
         val under = traceCell
         val label = (under?.tag as? String)?.replace(' ', '␣')
         if (!traceCommittedHere) {
