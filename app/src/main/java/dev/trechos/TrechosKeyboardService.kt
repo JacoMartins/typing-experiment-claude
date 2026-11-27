@@ -114,6 +114,17 @@ class TrechosKeyboardService : InputMethodService() {
     private var gestureAlts: List<String> = emptyList()
     private var lastGesture = ""
     @Volatile private var gestureContext = ""
+    /** As alternativas na barra são tokens (gesto calmo da grade), não palavras do swipe. */
+    private var altsAreTokens = false
+
+    // ---- gesto calmo na grade do Híbrido: nada é escrito no caminho; decide ao soltar
+    private var calmActive = false
+    private var calmCell: KeyView? = null
+    private var calmEnterAt = 0L
+    private var calmMoved = false
+    private var calmDownX = 0f
+    private var calmDownY = 0f
+    private val calmDwell = HashMap<KeyView, Long>()
 
     // ---- modo Traço (grade espacial + escolha por traço)
     private var pauseMs = 220L
@@ -750,12 +761,22 @@ class TrechosKeyboardService : InputMethodService() {
         val ic = currentInputConnection ?: return
         // trocar a palavra do último swipe por outra leitura do traço
         if (gestureAlts.isNotEmpty() && lastGesture.isNotEmpty() && textBefore().endsWith(lastGesture)) {
+            val replaced = lastGesture
+            val context = textBefore().dropLast(replaced.length)   // lido antes de mexer no texto
             ic.beginBatchEdit()
-            ic.deleteSurroundingText(lastGesture.length, 0)
-            commit("$w ")
+            ic.deleteSurroundingText(replaced.length, 0)
+            // alternativa de um gesto da grade: é um token (sem espaço extra); do swipe: palavra + espaço
+            val text = if (altsAreTokens) w else "$w "
+            commit(text)
             ic.endBatchEdit()
-            lastGesture = "$w "
-            lastAutoSpace = true
+            if (altsAreTokens) {
+                rejectPiece(context, replaced)   // o palpite estava errado
+                learnChoice(context, w)
+                if (pieceStack.lastOrNull() == replaced) pieceStack.removeLastOrNull()
+                pieceStack.addLast(text)
+            }
+            lastGesture = text
+            lastAutoSpace = text.endsWith(" ")
             return
         }
         val before = textBefore()
@@ -997,7 +1018,117 @@ class TrechosKeyboardService : InputMethodService() {
         pieceStack.clear()
         lastAutoSpace = true
         lastGesture = "$shown "
+        altsAreTokens = false
         gestureAlts = alts.map { caseLike(before + sep, it, wholeWord = true) }
+    }
+
+    // ================================================================ gesto calmo (Híbrido)
+
+    /** Probabilidade relativa de um token pela posição dele no ranking da previsão. */
+    private fun tokenPrior(cell: KeyView): Double {
+        val t = (cell.tag as? String)?.lowercase() ?: return 0.0
+        val rank = pieces.indexOfFirst { it.lowercase() == t }
+        return if (rank < 0) 0.05 else 1.0 / (1.0 + rank)
+    }
+
+    /**
+     * Pontuação de cada célula visitada: tempo que o dedo ficou nela (mais o bônus de ter
+     * soltado ali) vezes a probabilidade do token. Quanto mais tempo e mais provável, maior.
+     */
+    private fun calmRanking(endCell: KeyView?): List<KeyView> {
+        val scores = HashMap<KeyView, Double>()
+        for ((c, ms) in calmDwell) {
+            if (c.tag == null) continue
+            val time = ms + (if (c === endCell) CALM_END_BONUS_MS else 0L)
+            scores[c] = time * (0.35 + tokenPrior(c))
+        }
+        return scores.entries.sortedByDescending { it.value }.map { it.key }
+    }
+
+    private fun calmAccumulate(now: Long) {
+        val c = calmCell ?: return
+        calmDwell[c] = (calmDwell[c] ?: 0L) + (now - calmEnterAt)
+        calmEnterAt = now
+        c.progress = ((calmDwell[c] ?: 0L).toFloat() / CALM_FULL_MS).coerceIn(0.1f, 1f)
+    }
+
+    /**
+     * Gesto calmo na grade do Híbrido: a grade fica parada e NADA é escrito no caminho.
+     * As células visitadas enchem uma barrinha conforme o tempo do dedo nelas; o balão mostra o
+     * palpite atual. Ao soltar, escreve o token com maior pontuação (tempo x probabilidade,
+     * com bônus para onde soltou) e põe os outros na barra de cima para trocar.
+     * Tocar sem deslizar continua sendo um toque comum.
+     */
+    private fun onCalmTouch(ev: MotionEvent) {
+        val x = ev.rawX
+        val y = ev.rawY
+        val now = android.os.SystemClock.uptimeMillis()
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                calmActive = true
+                calmMoved = false
+                calmDwell.clear()
+                calmDownX = x; calmDownY = y
+                calmCell = keyUnder(cellViews, x, y)?.also { it.isPressed = true }
+                calmEnterAt = now
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!calmMoved && abs(x - calmDownX) + abs(y - calmDownY) > dp(12)) {
+                    calmMoved = true
+                    // começou a deslizar: rastro e balão com o palpite
+                    val tv = TrailView(this, ACCENT, dp(5).toFloat())
+                    overlay.addView(tv, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                    traceTrail = tv
+                }
+                if (!calmMoved) return
+                traceTrailAdd(x, y)
+                calmAccumulate(now)
+                val t = keyUnder(cellViews, x, y)
+                if (t !== calmCell) {
+                    calmCell?.isPressed = false
+                    calmCell = t
+                    t?.isPressed = true
+                }
+                // balão: o palpite de agora (como se soltasse aqui)
+                traceCell = calmRanking(calmCell).firstOrNull()
+                traceCommittedHere = false
+                moveTraceBubble(x, y)
+            }
+            MotionEvent.ACTION_UP -> {
+                calmAccumulate(now)
+                val end = calmCell
+                val moved = calmMoved
+                val ranking = if (moved) calmRanking(end) else emptyList()
+                calmEnd()
+                if (!moved) { end?.let { pickPiece(it) }; return }
+                val best = ranking.firstOrNull() ?: return
+                val before = textBefore()
+                pickPiece(best)
+                val chosen = best.tag as? String ?: return
+                // os outros candidatos ficam na barra para trocar com um toque
+                val others = ranking.drop(1).mapNotNull { it.tag as? String }.take(3)
+                if (others.isNotEmpty()) {
+                    altsAreTokens = true
+                    lastGesture = chosen
+                    gestureAlts = others
+                    words = others
+                    showWords(others, clickable = true)
+                }
+            }
+            MotionEvent.ACTION_CANCEL -> calmEnd()
+        }
+    }
+
+    private fun calmEnd() {
+        calmActive = false
+        calmCell?.isPressed = false
+        calmCell = null
+        cellViews.forEach { it.progress = 0f }
+        traceCell = null
+        traceTrail?.let { t -> t.animate().alpha(0f).setDuration(200).withEndAction { overlay.removeView(t) }.start() }
+        traceTrail = null
+        traceBubble?.let { b -> b.animate().alpha(0f).setDuration(150).withEndAction { overlay.removeView(b) }.start() }
+        traceBubble = null
     }
 
     // ================================================================ modo Traço
@@ -1986,9 +2117,9 @@ class TrechosKeyboardService : InputMethodService() {
         // as 3 fileiras da grade reconhecem deslize horizontal: troca de página (além do botão ⟳)
         val rows = SwipeLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            onSwipe = { dir -> if (mode != Mode.TRACO) changePage(dir) }
-            capture = { ev -> mode == Mode.TRACO && keyUnder(cellViews, ev.rawX, ev.rawY) != null }
-            onCaptured = { ev -> onTraceTouch(ev) }
+            onSwipe = { dir -> if (mode != Mode.TRACO && mode != Mode.HIBRIDO) changePage(dir) }
+            capture = { ev -> (mode == Mode.TRACO || mode == Mode.HIBRIDO) && keyUnder(cellViews, ev.rawX, ev.rawY) != null }
+            onCaptured = { ev -> if (mode == Mode.TRACO) onTraceTouch(ev) else onCalmTouch(ev) }
         }
         col.addView(rows)
         for (r in 0 until 3) {
@@ -2401,6 +2532,10 @@ class TrechosKeyboardService : InputMethodService() {
         /** Regiões do Traço: o QWERTY encolhido numa grade 3x3 (linha a linha). */
         private val REGIONS = listOf("qwe", "rtyu", "iop", "asd", "fgh", "jkl", "zxc", "vbn", "m")
         private val REGION_LABELS = listOf("qwe", "rtyu", "iop", "asd", "fgh", "jkl", "zxc", "vbn", "m")
+        /** Gesto calmo: tempo que enche a barrinha de uma célula, e bônus de onde o dedo soltou. */
+        private const val CALM_FULL_MS = 500L
+        private const val CALM_END_BONUS_MS = 250L
+
         /** Curva: o dedo muda de direção mais que ~50° dentro da célula. */
         private const val TURN_COS = 0.64f
         /** Segurar parado este tempo no toque armado só abre a grade, sem escrever. */
