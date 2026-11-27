@@ -2147,10 +2147,8 @@ class TrechosKeyboardService : InputMethodService() {
             // Traço: o gesto pode COMEÇAR numa letra de cima e seguir pela grade sem levantar o dedo
             k.setOnTouchListener { v, ev ->
                 if (mode != Mode.TRACO) return@setOnTouchListener false   // fora do Traço: toque comum
-                if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
-                    // a faixa não rola para o lado durante o traço (senão roubaria o movimento)
-                    v.parent?.requestDisallowInterceptTouchEvent(true)
-                }
+                // deslizar na horizontal rola a faixa (ela nos manda CANCEL e o traço é descartado);
+                // descer em direção à grade continua o traço
                 onTraceTouch(ev)
                 true
             }
